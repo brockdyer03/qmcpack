@@ -756,75 +756,46 @@ class Sobj(DevBase):
 class Structure(Sobj):
     """General class for all physical structures
 
-    Parameters
+    Attributes
     ----------
-    axes : ArrayLike or None, default=None
-        Lattice vectors of the cell
-    scale : int or float, default=1.
-        Scaling for all other physical values. See `Structure.rescale()`
-        for more information.
-    elem : ArrayLike or None, default=None
-        Array of atomic symbols. Overrides `elem_pos`
-    pos : ArrayLike or None, default=None
-        Positions of the atoms. Overrides `elem_pos`
-    elem_pos : str or None, default=None
-        Multiline string with each line containing an atom
-        where an atom is an element and its position
-    mag : ArrayLike or None, default=None
-        Magnetic moments of each atom
-    center : ArrayLike or None, default=None
-        Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
-    kpoints : ArrayLike or None, default=None
-        Array containing the positions of k-points
-    kweights : ArrayLike or None, default=None
-        Weight of individual k-points, must be as long as the number of k-points
-    kgrid : int or None, default=None
-        Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
-        for a more in-depth explanation. Overrides `kpoints` if specified.
-    kshift : ArrayLike or None, default=None
-        Vector to translate k-points if k-grid is specified.
-    permute : ArrayLike or None, default=None
-        Vector to permute the structure. See `Structure.permute()` for more information.
-    units : str or None, default=None
-        Units of the positions. See `unit_converter.py` for a 
-        full list of supported units.
-    tiling : ArrayLike of int or None, default=None
-        A vector of ints for tiling the cell in each dimension.
-        See `Structure.tile()` for more information.
-    rescale : bool, default=True
-        `True` will rescale the supplied structural information with the scaling
-        factor provided (see `scale`), `False` sets the `scale` without altering
-        the provided structural information.
+    axes : NDArray
+        Lattice vectors of the cell as a square matrix of dimension `dim`.
+    scale : int or float
+        Scaling for all other physical values.
+    elem : NDArray[str]
+        Array of atomic symbols.
+    pos : NDArray[float]
+        Positions of the atoms.
+    center : NDArray[float]
+        Defined center of the cell.
+    kpoints : NDArray[float]
+        Array containing the positions of k-points.
+    kweights : NDArray[float]
+        Weight of individual k-points.
+    units : str
+        Units of the atom positions.
     dim : int, default=3
-        Dimensionality of the Structure. See Notes for more information.
-    magnetization
-        See `Structure.magnetize()` for more information.
-    operations : str or Iterable[str] or None, default=None
+        Dimensionality of the Structure.
+    operations : str or Iterable[str]
         Operations to perform on the structure. See `Structure.set_operations()`
         for more information.
     background_charge : int, default=0
         The total background charge of the system. Positive for cations,
         negative for anions, and zero for neutral systems.
-    frozen : ArrayLike[bool] or None, default=None
+    bconds : NDArray[str]
+        Boundary conditions either in all directions or specified for each dimension
+
+    Optional Attributes
+    -------------------
+    mag : NDArray[float] or None
+        Magnetic moments of each atom, or `None` if system is not magnetized.
+    tmatrix : NDArray[int] or None
+        A vector of ints for tiling the cell in each dimension.
+        See `Structure.tile()` for more information.
+    frozen : NDArray[bool] or None, default=None
         Mask array of booleans with the same length as the number of atoms
-        and width of `dim`. See `Structure.set_frozen()` for more information
-    bconds : str or Iterable[str] or None, default=None
-        Boundary conditions either in all directions or specified for each
-        dimension. Defaults to periodic in all directions.
-    posu : ArrayLike or bool or None, default=None
-        Either the positions of the atoms in units of the lattice parameter
-        or a boolean to indicate that `pos` is in units of the lattice parameter,
-        in which case this signals to convert them to realspace units.
-    use_prim : bool or None, default=None
-        Option to convert the unit cell to a primitive cell.
-        Requires that the `seekpath` package is installed.
-    add_kpath : bool or None, default=None
-        Optionally add k-points to the primitive cell. Only
-        used if `use_prim` is ``True``.
-    symm_kgrid : bool, default=False
-        Option for generating a Monkhorst-Pack k-point grid with only
-        symmetric k-points. Requires `spglib` package. 
-        See `Structure.add_symmetrized_mesh` for more information.
+        and width of `dim`, where ``True`` indicates the atoms are locked in
+        place and ``False`` indicates they are free to move.
     """
 
     operations = obj()
@@ -838,33 +809,106 @@ class Structure(Sobj):
     #end def set_operations
 
 
-    def __init__(self,
-                 axes              = None,
-                 scale             = 1.,
-                 elem              = None,
-                 pos               = None,
-                 elem_pos          = None,
-                 mag               = None,
-                 center            = None,
-                 kpoints           = None,
-                 kweights          = None,
-                 kgrid             = None,
-                 kshift            = None,
-                 permute           = None,
-                 units             = None,
-                 tiling            = None,
-                 rescale           = True,
-                 dim               = 3,
-                 magnetization     = None,
-                 operations        = None,
-                 background_charge = 0,
-                 frozen            = None,
-                 bconds            = None,
-                 posu              = None,
-                 use_prim          = None,
-                 add_kpath         = False,
-                 symm_kgrid        = False,
-                 ):
+    def __init__(
+        self,
+        axes              = None,
+        scale             = 1.,
+        elem              = None,
+        pos               = None,
+        elem_pos          = None,
+        mag               = None,
+        center            = None,
+        kpoints           = None,
+        kweights          = None,
+        kgrid             = None,
+        kshift            = None,
+        permute           = None,
+        units             = None,
+        tiling            = None,
+        rescale           = True,
+        dim               = 3,
+        magnetization     = None,
+        operations        = None,
+        background_charge = 0,
+        frozen            = None,
+        bconds            = None,
+        posu              = None,
+        use_prim          = None,
+        add_kpath         = False,
+        symm_kgrid        = False,
+    ):
+        """Create a new `Structure` object.
+
+        Parameters
+        ----------
+        axes : ArrayLike or None, default=None
+            Lattice vectors of the cell
+        scale : int or float, default=1.
+            Scaling for all other physical values. See `Structure.rescale()`
+            for more information.
+        elem : ArrayLike or None, default=None
+            Array of atomic symbols. Overrides `elem_pos`
+        pos : ArrayLike or None, default=None
+            Positions of the atoms. Overrides `elem_pos`
+        elem_pos : str or None, default=None
+            Multiline string with each line containing an atom
+            where an atom is an element and its position
+        mag : ArrayLike or None, default=None
+            Magnetic moments of each atom
+        center : ArrayLike or None, default=None
+            Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
+        kpoints : ArrayLike or None, default=None
+            Array containing the positions of k-points
+        kweights : ArrayLike or None, default=None
+            Weight of individual k-points, must be as long as the number of k-points
+        kgrid : int or None, default=None
+            Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
+            for a more in-depth explanation. Overrides `kpoints` if specified.
+        kshift : ArrayLike or None, default=None
+            Vector to translate k-points if k-grid is specified.
+        permute : ArrayLike or None, default=None
+            Vector to permute the structure. See `Structure.permute()` for more information.
+        units : str or None, default=None
+            Units of the positions. See `unit_converter.py` for a 
+            full list of supported units.
+        tiling : ArrayLike of int or None, default=None
+            A vector of ints for tiling the cell in each dimension.
+            See `Structure.tile()` for more information.
+        rescale : bool, default=True
+            `True` will rescale the supplied structural information with the scaling
+            factor provided (see `scale`), `False` sets the `scale` without altering
+            the provided structural information.
+        dim : int, default=3
+            Dimensionality of the Structure. See Notes for more information.
+        magnetization
+            See `Structure.magnetize()` for more information.
+        operations : str or Iterable[str] or None, default=None
+            Operations to perform on the structure. See `Structure.set_operations()`
+            for more information.
+        background_charge : int, default=0
+            The total background charge of the system. Positive for cations,
+            negative for anions, and zero for neutral systems.
+        frozen : ArrayLike[bool] or None, default=None
+            Mask array of booleans with the same length as the number of atoms
+            and width of `dim`. See `Structure.set_frozen()` for more information
+        bconds : str or Iterable[str] or None, default=None
+            Boundary conditions either in all directions or specified for each
+            dimension. Defaults to periodic in all directions.
+        posu : ArrayLike or bool or None, default=None
+            Either the positions of the atoms in units of the lattice parameter
+            or a boolean to indicate that `pos` is in units of the lattice parameter,
+            in which case this signals to convert them to realspace units.
+        use_prim : bool or None, default=None
+            Option to convert the unit cell to a primitive cell.
+            Requires that the `seekpath` package is installed.
+        add_kpath : bool or None, default=None
+            Optionally add k-points to the primitive cell. Only
+            used if `use_prim` is ``True``.
+        symm_kgrid : bool, default=False
+            Option for generating a Monkhorst-Pack k-point grid with only
+            symmetric k-points. Requires `spglib` package. 
+            See `Structure.add_symmetrized_mesh` for more information.
+        """
 
         if isinstance(axes,str):
             axes = np.array(axes.split(),dtype=float)
@@ -1995,7 +2039,7 @@ class Structure(Sobj):
     # test needed
     def locate(self,identifiers,radii=None,exterior=False):
         """Extract the index or indices of an atom or atoms from a Structure.
-        
+
         Parameters
         ----------
         identifiers : Structure | NDArray[bool] | int | str | Iterable[int | str]
@@ -2084,7 +2128,7 @@ class Structure(Sobj):
         return indices
     #end def locate
 
-    
+
     def freeze(self,identifiers=None,radii=None,exterior=False,negate=False,directions='xyz'):
         if isinstance(identifiers,np.ndarray) and identifiers.shape==self.pos.shape and identifiers.dtype==bool:
             if negate:
