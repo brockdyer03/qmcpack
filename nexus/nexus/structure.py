@@ -2249,7 +2249,10 @@ class Structure(Sobj):
     #end def magnetize
 
 
-    def is_magnetic(self,tol=1e-8):
+    def is_magnetic(self, tol=1e-8):
+        """Return boolean if there are non-zero magnetic moments 
+        (within the tolerance specified) on any atoms.
+        """
         magnetic = False
         if self.mag is not None:
             for m in self.mag:
