@@ -753,7 +753,79 @@ class Sobj(DevBase):
 
 
 
-class Structure(Sobj): 
+class Structure(Sobj):
+    """General class for all physical structures
+
+    Parameters
+    ----------
+    axes : ArrayLike or None, default=None
+        Lattice vectors of the cell
+    scale : int or float, default=1.
+        Scaling for all other physical values. See `Structure.rescale()`
+        for more information.
+    elem : ArrayLike or None, default=None
+        Array of atomic symbols. Overrides `elem_pos`
+    pos : ArrayLike or None, default=None
+        Positions of the atoms. Overrides `elem_pos`
+    elem_pos : str or None, default=None
+        Multiline string with each line containing an atom
+        where an atom is an element and its position
+    mag : ArrayLike or None, default=None
+        Magnetic moments of each atom
+    center : ArrayLike or None, default=None
+        Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
+    kpoints : ArrayLike or None, default=None
+        Array containing the positions of k-points
+    kweights : ArrayLike or None, default=None
+        Weight of individual k-points, must be as long as the number of k-points
+    kgrid : int or None, default=None
+        Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
+        for a more in-depth explanation. Overrides `kpoints` if specified.
+    kshift : ArrayLike or None, default=None
+        Vector to translate k-points if k-grid is specified.
+    permute : ArrayLike or None, default=None
+        Vector to permute the structure. See `Structure.permute()` for more information.
+    units : str or None, default=None
+        Units of the positions. See `unit_converter.py` for a 
+        full list of supported units.
+    tiling : ArrayLike of int or None, default=None
+        A vector of ints for tiling the cell in each dimension.
+        See `Structure.tile()` for more information.
+    rescale : bool, default=True
+        `True` will rescale the supplied structural information with the scaling
+        factor provided (see `scale`), `False` sets the `scale` without altering
+        the provided structural information.
+    dim : int, default=3
+        Dimensionality of the Structure. See Notes for more information.
+    magnetization
+        See `Structure.magnetize()` for more information.
+    operations : str or Iterable[str] or None, default=None
+        Operations to perform on the structure. See `Structure.set_operations()`
+        for more information.
+    background_charge : int, default=0
+        The total background charge of the system. Positive for cations,
+        negative for anions, and zero for neutral systems.
+    frozen : ArrayLike[bool] or None, default=None
+        Mask array of booleans with the same length as the number of atoms
+        and width of `dim`. See `Structure.set_frozen()` for more information
+    bconds : str or Iterable[str] or None, default=None
+        Boundary conditions either in all directions or specified for each
+        dimension. Defaults to periodic in all directions.
+    posu : ArrayLike or bool or None, default=None
+        Either the positions of the atoms in units of the lattice parameter
+        or a boolean to indicate that `pos` is in units of the lattice parameter,
+        in which case this signals to convert them to realspace units.
+    use_prim : bool or None, default=None
+        Option to convert the unit cell to a primitive cell.
+        Requires that the `seekpath` package is installed.
+    add_kpath : bool or None, default=None
+        Optionally add k-points to the primitive cell. Only
+        used if `use_prim` is ``True``.
+    symm_kgrid : bool, default=False
+        Option for generating a Monkhorst-Pack k-point grid with only
+        symmetric k-points. Requires `spglib` package. 
+        See `Structure.add_symmetrized_mesh` for more information.
+    """
 
     operations = obj()
 
@@ -1273,6 +1345,28 @@ class Structure(Sobj):
 
     # test needed
     def permute(self,permutation):
+        """Permute a structure with a supplied permutation vector
+
+        Parameters
+        ----------
+        permutation : ArrayLike, dtype=str
+            Vector used to generate a permutation matrix. See Note below
+            for full description.
+
+        Note
+        ----
+        The supplied permutation vector can have one of two forms, one being
+        a vector of coordinate axis names to permute into one another, or a
+        vector of coordinate axis numbers to permute into one another.
+
+        For example, the inputs `["x", "y", "z"]` and `["0", "1", "2"]` are
+        identical, and will lead to no permutation. The input `["y", "x", "z"]`
+        will swap the `x` and `y` coordinates of every physical property in the
+        Structure, while leaving the `z` coordinates as-is.
+
+        Inputting `["y", "y", "z"]` will overwrite the `x` components of the Structure
+        with the `y` component.
+        """
         dim = self.dim
         P = np.empty((dim,dim),dtype=int)
         if len(permutation)!=dim:
@@ -1900,6 +1994,38 @@ class Structure(Sobj):
     
     # test needed
     def locate(self,identifiers,radii=None,exterior=False):
+        """Extract the index or indices of an atom or atoms from a Structure.
+        
+        Parameters
+        ----------
+        identifiers : Structure | NDArray[bool] | int | str | Iterable[int | str]
+            Identifiers to pull the index or indices of an atom. See Notes.
+        radii : Iterable[int | float] or None, default=None
+            Iterable of radii to include or exclude atoms, depending on `exterior`
+        exterior : bool, default=False
+            ``False`` includes only atoms inside the Structure or radii,
+            ``True`` includes only atoms outside the Structure or radii.
+
+        Notes
+        -----
+        If `identifiers` is a `Structure` object, then return the indices
+        contained by the unit cell, or those outside the unit cell if `exterior`
+        is ``True``.
+
+        If `identifiers` is an array of booleans, then return those atoms not
+        marked ``False`` in the array, inverting if `exterior` is ``True``.
+
+        If `identifiers` is an integer, return the integer, inverting to 
+        select all other atoms if `exterior`` is ``True``.
+
+        If `identifiers` is a string, return those atoms with atomic symbols
+        matching the string, inverting to select all other atoms 
+        if `exterior` is ``True``.
+
+        If `identifiers` is an iterable of strings or integers, perform the
+        same operations as above, but match against all strings or integers,
+        inverting the selection if `exterior` is ``True``.
+        """
         indices = None
         if isinstance(identifiers,Structure):
             cell = identifiers
@@ -2015,6 +2141,19 @@ class Structure(Sobj):
 
     # test needed
     def magnetize(self,identifiers=None,magnetization='',**mags):
+        """Magnetize the atoms located with `identifiers` by `mags`
+        
+        Parameters
+        ----------
+        identifiers : iterable[int | None] or identifier
+            An iterable of integer magnetizations or None for no magnetization.
+            If `magnetization` is provided, this is passed to `Structure.locate()`
+        magnetization : int or None or Iterable[int | None]
+            The magnetization of each atom labeled by identifiers. This cannot
+            be left blank, otherwise this will raise an error.
+        **mags
+            Something? Somehow?
+        """
         magsin = None
         if isinstance(identifiers,obj):
             magsin = identifiers.copy()
@@ -2030,7 +2169,7 @@ class Structure(Sobj):
         for e,m in mags.items():
             if e not in self.elem:
                 self.error('cannot magnetize non-existent element {0}'.format(e))
-            elif m is not None or not isinstance(m,int):
+            elif m is not None and not isinstance(m,int): # De Morgan's Law
                 self.error('magnetizations provided must be either None or integer\n  you provided: {0}\n  full magnetization request provided:\n {1}'.format(m,mags))
             #end if
             self.mag[self.elem==e] = m
@@ -2047,7 +2186,7 @@ class Structure(Sobj):
             magnetization = [magnetization]
         #end if
         for m in magnetization:
-            if m is not None or not isinstance(m,int):
+            if m is not None and not isinstance(m,int): # De Morgan's Law.
                 self.error('magnetizations provided must be either None or integer\n  you provided: {0}\n  full magnetization list provided: {1}'.format(m,magnetization))
             #end if
         #end for
@@ -3428,6 +3567,23 @@ class Structure(Sobj):
 
 
     def tile(self,*td,**kwargs):
+        """Tile a structure object.
+        
+        Parameters
+        ----------
+        *td : int or tuple of int
+            Number of tiled images in each direction.
+
+        **kwargs
+        
+        in_place : bool, default=False
+            `True` replaces the current structure with the tiled version, AND
+            returns the tiled structure. `False` returns the `Structure` object
+            from the tiling, and leaves the current instance untouched.
+        check : bool, default=False
+            Optionally check if the tiled structure matches the folded structure.
+            See `Structure.check_tiling()` for more information.
+        """
         in_place           = kwargs.pop('in_place',False)
         check              = kwargs.pop('check',False)
 
@@ -3476,6 +3632,7 @@ class Structure(Sobj):
             frozen = ncells*list(self.frozen)
         #end if
 
+        # ts = Tiled Structure
         ts = self.copy()
         ts.center   = center
         ts.set_elem(elem)
@@ -3821,6 +3978,7 @@ class Structure(Sobj):
 
 
     def primitive(self,source=None,tmatrix=False,add_kpath=False,**kwargs):
+        """Convert a cell to a primitive cell. Requires `seekpath`"""
         res = None
         allowed_sources = set(['seekpath'])
         if source is None or isinstance(source,bool):
