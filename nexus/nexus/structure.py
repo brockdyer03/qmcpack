@@ -861,7 +861,6 @@ class Structure(Sobj):
         tiling            = None,
         rescale           = True,
         dim               = 3,
-        magnetization     = None,
         operations        = None,
         background_charge = 0,
         frozen            = None,
@@ -914,8 +913,6 @@ class Structure(Sobj):
             the provided structural information.
         dim : int, default=3
             Dimensionality of the Structure. See Notes for more information.
-        magnetization
-            See `Structure.magnetize()` for more information.
         operations : str or Iterable[str] or None, default=None
             Operations to perform on the structure. See `Structure.set_operations()`
             for more information.
@@ -1001,9 +998,6 @@ class Structure(Sobj):
         #end if
         if posu is not None:
             self.pos_to_cartesian()
-        #end if
-        if magnetization is not None:
-            self.magnetize(magnetization)
         #end if
         if use_prim is not None and use_prim is not False:
             self.become_primitive(source=use_prim,add_kpath=add_kpath)
@@ -2215,72 +2209,6 @@ class Structure(Sobj):
             return self.frozen.sum(1)>0
         #end if
     #end def is_frozen
-
-
-    # test needed
-    def magnetize(self,identifiers=None,magnetization='',**mags):
-        """Magnetize the atoms located with `identifiers` by `mags`
-        
-        Parameters
-        ----------
-        identifiers : iterable[int | None] or identifier
-            An iterable of integer magnetizations or None for no magnetization.
-            If `magnetization` is provided, this is passed to `Structure.locate()`
-        magnetization : int or None or Iterable[int | None]
-            The magnetization of each atom labeled by identifiers. This cannot
-            be left blank, otherwise this will raise an error.
-        **mags
-            Something? Somehow?
-        """
-        magsin = None
-        if isinstance(identifiers,obj):
-            magsin = identifiers.copy()
-        elif isinstance(magnetization,obj):
-            magsin = magnetization.copy()
-        #endif
-        if magsin is not None:
-            magsin.transfer_from(mags)
-            mags = magsin
-            identifiers = None
-            magnetization = ''
-        #end if
-        for e,m in mags.items():
-            if e not in self.elem:
-                self.error('cannot magnetize non-existent element {0}'.format(e))
-            elif m is not None and not isinstance(m,int): # De Morgan's Law
-                self.error('magnetizations provided must be either None or integer\n  you provided: {0}\n  full magnetization request provided:\n {1}'.format(m,mags))
-            #end if
-            self.mag[self.elem==e] = m
-        #end for
-        if identifiers is None and magnetization=='':
-            return
-        elif magnetization=='':
-            magnetization = identifiers
-            indices = list(range(len(self.elem)))
-        else:
-            indices = self.locate(identifiers)
-        #end if
-        if not isinstance(magnetization,(list,tuple,np.ndarray)):
-            magnetization = [magnetization]
-        #end if
-        for m in magnetization:
-            if m is not None and not isinstance(m,int): # De Morgan's Law.
-                self.error('magnetizations provided must be either None or integer\n  you provided: {0}\n  full magnetization list provided: {1}'.format(m,magnetization))
-            #end if
-        #end for
-        if len(magnetization)==1:
-            m = magnetization[0]
-            for i in indices:
-                self.mag[i] = m
-            #end for
-        elif len(magnetization)==len(indices):
-            for i in range(len(indices)):
-                self.mag[indices[i]] = magnetization[i]
-            #end for
-        else:
-            self.error('magnetization list and list selected atoms differ in length\n  length of magnetization list: {0}\n  number of atoms selected: {1}\n  magnetization list: {2}\n  atom indices selected: {3}\n  atoms selected: {4}'.format(len(magnetization),len(indices),magnetization,indices,self.elem[indices]))
-        #end if
-    #end def magnetize
 
 
     def is_magnetic(self, tol=1e-8):
@@ -6826,7 +6754,6 @@ class Crystal(Structure):
                  kgrid          = None,
                  mag            = None,
                  frozen         = None,
-                 magnetization  = None,
                  kshift         = (0,0,0),
                  permute        = None,
                  operations     = None,
@@ -6856,7 +6783,6 @@ class Crystal(Structure):
             angular_units  = angular_units ,
             frozen         = frozen        ,
             mag            = mag           ,
-            magnetization  = magnetization ,
             kpoints        = kpoints       ,
             kgrid          = kgrid         ,
             kshift         = kshift        ,
@@ -7130,7 +7056,6 @@ class Crystal(Structure):
             units          = units,
             frozen         = frozen,
             mag            = mag,
-            magnetization  = magnetization,
             tiling         = tiling,
             kpoints        = kpoints,
             kgrid          = kgrid,
@@ -7430,7 +7355,6 @@ def generate_crystal_structure(
     axes           = None,
     units          = None,
     angular_units  = 'degrees',
-    magnetization  = None,
     mag            = None,
     kpoints        = None,
     kweights       = None,
@@ -7483,7 +7407,6 @@ def generate_crystal_structure(
             units          = units,
             mag            = mag,
             frozen         = frozen,
-            magnetization  = magnetization,
             tiling         = tiling,
             kpoints        = kpoints,
             kgrid          = kgrid,
@@ -7548,7 +7471,6 @@ def generate_crystal_structure(
         angular_units  = angular_units ,
         frozen         = frozen        ,
         mag            = mag           ,
-        magnetization  = magnetization ,
         kpoints        = kpoints       ,
         kgrid          = kgrid         ,
         kshift         = kshift        ,
