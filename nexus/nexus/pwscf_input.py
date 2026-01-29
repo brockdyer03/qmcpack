@@ -903,7 +903,7 @@ for sec in section_classes:
     sec.class_init()
 #end for
 
-
+from sys import exit
 exit_ = exit
 def check_new_variables(exit=True):
     sections = section_classes

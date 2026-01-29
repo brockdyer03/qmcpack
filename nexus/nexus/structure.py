@@ -4862,7 +4862,28 @@ class Structure(Sobj):
     #end def makov_payne
 
 
-    def read(self,filepath,format=None,elem=None,block=None,grammar='1.1',cell='prim',contents=False):
+    def read(self,filepath,format=None,elem=None,block=None,grammar='1.1',cell='prim',contents=False) -> None:
+        """Read in a file and update the current `Structure` object.
+
+        Parameters
+        ----------
+        filepath : PathLike or str
+            Path to the file or string of the contents of the file to be read
+        format : {"xyz", "xsf", "poscar", "cif", "fhi-aims"} or None, default=None
+            Format of the file to be read. If ``None`` then determine
+            the format based off the file extension.
+        elem : ArrayLike of int or None, default=None
+            See `Structure.read_poscar()` for more information
+        contents : bool, default=False
+            Specify whether or not the parameter `filepath` is a path or the
+            contents of the file.
+
+        Note
+        ----
+        The parameters `block`, `grammar`, and `cell` are all specific to the
+        `Cif2Cell` package. If you are trying to read a CIF file pleasure ensure
+        you have this installed.
+        """
         if os.path.exists(filepath):
             path,file = os.path.split(filepath)
             if format is None:
@@ -4902,7 +4923,15 @@ class Structure(Sobj):
     #end def read
 
 
-    def read_xyz(self,filepath):
+    def read_xyz(self,filepath) -> None:
+        """Read in an XYZ file and update the current `Structure` object.
+
+        Parameters
+        ----------
+        filepath : PathLike or str
+            This parameter can either be a file path that points to an XYZ file
+            or can be the literal contents of an XYZ file.
+        """
         elem = []
         pos  = []
         if os.path.exists(filepath):
@@ -4953,7 +4982,20 @@ class Structure(Sobj):
     #end def read_xyz
 
 
-    def read_xsf(self,filepath):
+    def read_xsf(self,filepath) -> None:
+        """Read in an XSF file and update the current `Structure` object.
+
+        Parameters
+        ----------
+        filepath : PathLike or str
+            This parameter can either be a file path that points to an XSF file
+            or can be the literal contents of an XSF file.
+
+        Note
+        ----
+        This only reads in the geometric parameters from an XSF file,
+        any meshes or datagrids are not stored.
+        """
         if isinstance(filepath,XsfFile):
             f = filepath
         elif os.path.exists(filepath):
@@ -4978,7 +5020,18 @@ class Structure(Sobj):
     #end def read_xsf
 
 
-    def read_poscar(self,filepath,elem=None):
+    def read_poscar(self,filepath,elem=None) -> None:
+        """Read in a POSCAR file and update the current `Structure` object.
+
+        Parameters
+        ----------
+        filepath : PathLike or str
+            This parameter can either be a file path that points to a POSCAR file
+            or can be the literal contents of a POSCAR file.
+        elem : ArrayLike of int or None, default=None
+            If the POSCAR file does not contain information about the elements inside,
+            you must provide them as a list or array of their atomic numbers.
+        """
         if os.path.exists(filepath):
             lines = open(filepath,'r').read().splitlines()
         else:
@@ -5076,7 +5129,13 @@ class Structure(Sobj):
     #end def read_poscar
 
 
-    def read_cif(self,filepath,block=None,grammar='1.1',cell='prim'):
+    def read_cif(self,filepath,block=None,grammar='1.1',cell='prim') -> None:
+        """Read in a CIF file and update the current `Structure` object.
+
+        Note
+        ----
+        This requires that the `Cif2Cell` package is installed!
+        """
         axes,elem,pos,units = read_cif(filepath,block,grammar,cell,args_only=True)
         self.dim = 3
         self.set_axes(axes)
@@ -5087,7 +5146,8 @@ class Structure(Sobj):
 
 
     # test needed
-    def read_fhi_aims(self,filepath):
+    def read_fhi_aims(self,filepath) -> None:
+        """Read an FHI-aims file and update the current `Structure` object."""
         if os.path.exists(filepath):
             lines = open(filepath,'r').read().splitlines()
         else:
