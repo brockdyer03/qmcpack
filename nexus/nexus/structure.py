@@ -4790,9 +4790,27 @@ class Structure(Sobj):
     #end def interpolate
 
 
-    # returns madelung potential constant v_M
-    #   see equation 7 in PRB 78 125106 (2008) 
-    def madelung(self,axes=None,tol=1e-10):
+    def madelung(self, axes=None, tol=1e-10) -> float:
+        """Returns madelung potential constant :math:`v_M`.
+
+        Parameters
+        ----------
+        axes : NDArray or None, default=None
+            Cell dimensions to use in the calculation. If ``None``,
+            use the axes of `self`.
+        tol : float, default=1e-10
+            Tolerance for an early cutoff of the lattice sum.
+
+        Returns
+        -------
+        vm : float
+            The Madelung constant for a given set of axes
+
+        Note
+        ----
+        See Equation 7 in https://doi.org/10.1103/PhysRevB.78.125106
+        for a more in-depth description of the method.
+        """
         if self.dim!=3:
             self.error('madelung is currently only implemented for 3 dimensions')
         #end if
@@ -4845,7 +4863,31 @@ class Structure(Sobj):
     #end def madelung
 
 
-    def makov_payne(self,q=1,eps=1.0,units='Ha',order=1):
+    def makov_payne(self,q=1,eps=1.0,units='Ha',order=1) -> float:
+        """Calculate a first-order Makov-Payne correction
+        
+        Parameters
+        ----------
+        q : int, default=1
+            Total charge of the system 
+            (total nuclear charge minus total number of electrons)
+        eps : float, default=1
+            Dielectric constant of the system.
+        units : str, default="Ha"
+            Units for the output. Default is Hartrees.
+        order : int, default=1
+            Order of the Makov-Payne correction. Currently only a
+            first-order correction is available.
+
+        Returns
+        -------
+        mp : float
+            Makov-Payne correction for the system, in the specified `units`.
+
+        Note
+        ----
+        For a description of the method, see https://doi.org/10.1103/PhysRevB.51.4014
+        """
         if order!=1:
             self.error('Only first order Makov-Payne correction is currently supported.')
         #end if
