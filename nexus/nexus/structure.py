@@ -1760,6 +1760,15 @@ class Structure(Sobj):
     
     # test needed
     def rescale(self,scale):
+        """Scale the structure by a specified scaling factor
+
+        Note
+        ----
+        This function will scale by the same amount in all dimensions.
+
+        This function scales the cell axes, the atom positions, the cell center,
+        the k-space axes, the k-points, and the folded structure if there is one.
+        """
         self.scale  *= scale
         self.axes   *= scale
         self.pos    *= scale
@@ -1773,7 +1782,22 @@ class Structure(Sobj):
 
 
     # test needed
-    def stretch(self,s1,s2,s3):
+    def stretch(self, s1, s2, s3):
+        """Scale physical dimensions of the structure.
+
+        Parameters
+        ----------
+        s1 : float
+            Scaling factor in the X direction
+        s2 : float
+            Scaling factor in the Y direction
+        s3 : float
+            Scaling factor in the Z direction
+
+        Note
+        ----
+        See `Structure.matrix_transform()` for a list of all scaled quantities.
+        """
         if self.dim!=3:
             self.error('stretch is currently only implemented for 3 dimensions')
         #end if
@@ -1784,31 +1808,25 @@ class Structure(Sobj):
 
     # test needed
     def rotate(self,r,rp=None,passive=False,units="radians",check=True):
-        """
-        Arbitrary rotation of the structure.
+        """Arbitrary rotation of the structure.
+
         Parameters
         ----------
-        r  : `array_like, float, shape (3,3)` or `array_like, float, shape (3,)` or `str`
+        r : ArrayLike of float with shape (3,3) or ArrayLike of float shape (3,) or str
             If a 3x3 matrix, then code executes rotation consistent with this matrix -- 
             it is assumed that the matrix acts on a column-major vector (eg, v'=Rv)
             If a three-dimensional array, then the operation of the function depends
             on the input type of rp in the following ways:
                 1. If rp is a scalar, then rp is assumed to be an angle and a rotation 
                    of rp is made about the axis defined by r
-                2. If rp is a vector, then rp is assumed to be an axis and a rotation is made 
-                   such that r aligns with rp
+                2. If rp is a vector, then rp is assumed to be an axis and a 
+                   rotation is made such that r aligns with rp
                 3. If rp is a str, then the rotation is such that r aligns with the
                    axis given by the str ('x', 'y', 'z', 'a0', 'a1', or 'a2')
-            If a str then the axis, r, is defined by the input label (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3')
-            and the operation of the function depends on the input type of rp in the following
-            ways (same as above):
-                1. If rp is a scalar, then rp is assumed to be an angle and a rotation 
-                   of rp is made about the axis defined by r
-                2. If rp is a vector, then rp is assumed to be an axis and a rotation is made 
-                   such that r aligns with rp
-                3. If rp is a str, then the rotation is such that r aligns with the
-                   axis given by the str ('x', 'y', 'z', 'a0', 'a1', or 'a2')
-        rp : `array_like, float, shape (3), optional` or `str, optional`
+            If a str then the axis, r, is defined by the input label
+            (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3') and the operation of the
+            function depends on the input type of rp in the same ways as above
+        rp : ArrayLike of float with shape (3) or str, optional
             If a 3-dimensional vector is given, then rp is assumed to be an axis and a rotation is made
             such that the axis r is aligned with rp.
             If a str, then rp is assumed to be an angle and a rotation about the axis defined by r 
@@ -1816,12 +1834,12 @@ class Structure(Sobj):
             If a str is given, then rp is assumed to be an axis defined by the given label
             (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3') and a rotation is made such that the axis r 
             is aligned with rp.
-        passive : `bool, optional, default False`
+        passive : bool, default=False
             If `True`, perform a passive rotation
             If `False`, perform an active rotation
-        units : `str, optional, default "radians"`
+        units : str, default="radians"
             Units of rp, if rp is given as an angle (scalar)
-        check : `bool, optional, default True`
+        check : bool, default=True
             Perform a check to verify rotation matrix is orthogonal
         """
         if rp is not None:
@@ -1887,16 +1905,22 @@ class Structure(Sobj):
 
 
     # test needed
-    def matrix_transform(self,A): 
-        """
-        Arbitrary transformation matrix (column-major).
+    def matrix_transform(self, A): 
+        """Arbitrary transformation matrix (column-major).
 
         Parameters
         ----------
-        A  : `array_like, float, shape (3,3)`
+        A : ArrayLike of float with shape (3,3)
             Transform the structure using the matrix A. It is assumed that
             A is in column-major form, i.e., it transforms a vector v as
             v' = Av
+
+        Note
+        ----
+        This will transform all physical dimensions of the structure, including
+        the cell axes, the k-space axes, the positions of the atoms, the center
+        of the cell, and if there is a folded structure it will transform that as
+        well.
         """
         A = A.T
         axinv  = inv(self.axes)
@@ -1916,12 +1940,11 @@ class Structure(Sobj):
 
     # test needed
     def skew(self,skew):
-        """
-        Arbitrary transformation matrix (row-major).
+        """Arbitrary transformation matrix (row-major).
 
         Parameters
         ----------
-        skew  : `array_like, float, shape (3,3)`
+        skew : ArrayLike of float with shape (3,3)
             Transform the structure using the matrix skew. It is assumed that
             skew is in row-major form, i.e., it transforms a vector v as
             v' = vT
@@ -2029,7 +2052,7 @@ class Structure(Sobj):
         #end if
     #end def translate
 
-                              
+
     # test needed
     def slide(self,v,recenter=True):
         v = np.array(v)
