@@ -5142,6 +5142,31 @@ class Structure(Sobj):
 
 
     def write(self,filepath=None,format=None):
+        """Write a `Structure` object to a given file format
+
+        Parameters
+        ----------
+        filepath : PathLike or None, default=None
+            Path to where the file should be written.
+        format : {"xyz", "xsf", "poscar", "fhi-aims"} or None, default=None
+            Format that the file should be written as.
+
+        Returns
+        -------
+        text : str
+            The text that was or would have been written to the file.
+
+        Notes
+        -----
+        Passing ``None`` for `filepath` will cause the function to not write 
+        to any file and just return what it would have written. If `format` is
+        not given but `filepath` is, this function will try to determine the
+        format by looking at the file extension in `filepath`. If neither are
+        supplied this function will raise an error.
+
+        See the documentation for the related functions `write_<format>()` for information on their
+        default arguments.
+        """
         if filepath is None and format is None:
             self.error('please specify either the filepath or format arguments to write()')
         elif format is None:
@@ -5168,6 +5193,27 @@ class Structure(Sobj):
 
 
     def write_xyz(self,filepath=None,header=True,units='A'):
+        """Write a `Structure` object to an XYZ file
+        
+        Parameters
+        ----------
+        filepath : PathLike or None, default=None
+            Path to where the XYZ file should be written.
+            If this is ``None``, then this function just returns 
+            what would have been written to the XYZ file.
+        header : bool, default=True
+            Option to write the number of atoms at the top of the XYZ file.
+            This should ALWAYS be true if you are writing to a file, otherwise
+            the file does not conform to XYZ standards!
+        units : str, default="A"
+            Units for the coordinates in the XYZ file. Standard XYZ files
+            are always specified in Angstrom!
+
+        Returns
+        -------
+        xyz : str
+            The text that was or would have been written to the XYZ file.
+        """
         if self.dim!=3:
             self.error('write_xyz is currently only implemented for 3 dimensions')
         #end if
@@ -5190,6 +5236,20 @@ class Structure(Sobj):
 
 
     def write_xsf(self,filepath=None):
+        """Write a `Structure` object to an XSF file
+        
+        Parameters
+        ----------
+        filepath : PathLike or None, default=None
+            Path to where the XSF file should be written.
+            If this is ``None``, then this function just returns 
+            what would have been written to the XSF file.
+
+        Returns
+        -------
+        xsf : str
+            What was or would have been written to the XSF file.
+        """
         if self.dim!=3:
             self.error('write_xsf is currently only implemented for 3 dimensions')
         #end if
@@ -5228,6 +5288,20 @@ class Structure(Sobj):
 
 
     def write_poscar(self,filepath=None):
+        """Write a `Structure` object to a POSCAR file
+        
+        Parameters
+        ----------
+        filepath : PathLike or None, default=None
+            Path to where the POSCAR file should be written.
+            If this is ``None``, then this function just returns 
+            what would have been written to the POSCAR file.
+
+        Returns
+        -------
+        poscar : str
+            What was or would have been written to the POSCAR file.
+        """
         s = self.copy()
         s.change_units('A')
         species,species_count = s.order_by_species()
@@ -5248,6 +5322,20 @@ class Structure(Sobj):
 
     # test needed
     def write_fhi_aims(self,filepath=None):
+        """Write a `Structure` object to an FHI-aims style file.
+
+        Parameters
+        ----------
+        filepath : PathLike or None, default=None
+            Path to where the FHI-aims file should be written.
+            If this is ``None``, then this function just returns 
+            what would have been written to the file.
+
+        Returns
+        -------
+        text : str
+            The text that was or would have been written to the FHI-aims file
+        """
         s = self.copy()
         s.change_units('A')
         c = ''
