@@ -1520,7 +1520,14 @@ class Structure(Sobj):
 
 
     # test needed
-    def upcast(self,DerivedStructure):
+    def upcast(self, DerivedStructure):
+        """Upcast a `Structure` to a subclass of `Structure`.
+        
+        Parameters
+        ----------
+        DerivedStructure : {DefectStructure, Crystal, Jellium}
+            One of the classes that derives from `Structure`.
+        """
         if not issubclass(DerivedStructure,Structure):
             self.error(DerivedStructure.__name__,'is not derived from Structure')
         #end if
@@ -1534,6 +1541,7 @@ class Structure(Sobj):
     
     # test needed
     def incorporate(self,other):
+        """Add atoms from another structure to the current structure."""
         self.set_elem(list(self.elem)+list(other.elem))
         self.pos=np.array(list(self.pos)+list(other.pos))
     #end def incorporate
@@ -1550,7 +1558,16 @@ class Structure(Sobj):
 
 
     # test needed
-    def add_atoms(self,elem,pos):
+    def add_atoms(self, elem, pos):
+        """Add atoms to a structure.
+        
+        Parameters
+        ----------
+        elem : ArrayLike of str with shape (N)
+            Sequence of atomic symbols.
+        pos : ArrayLike with shape (N,3)
+            Positions of the atoms to be added.
+        """
         self.set_elem(list(self.elem)+list(elem))
         self.pos=np.array(list(self.pos)+list(pos))
     #end def add_atoms
@@ -1642,7 +1659,9 @@ class Structure(Sobj):
 
 
     def volume(self) -> float:
-        """Calculate the volume of the unit cell."""
+        """Calculate the volume of the unit cell. Returns ``None`` if
+        there is no unit cell.
+        """
         if not self.has_axes():
             return None
         else:
