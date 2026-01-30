@@ -1173,12 +1173,12 @@ class Structure(Sobj):
         #end if
     #end def remove_folded_structure
 
-        
+
     def has_folded_structure(self):
         return self.folded_structure is not None
     #end def has_folded_structure
 
-            
+
     # test needed
     def group_atoms(self,folded=True):
         if len(self.elem)>0:
@@ -1196,6 +1196,17 @@ class Structure(Sobj):
 
     # test needed
     def rename(self,folded=True,**name_pairs):
+        """Update element names in a structure.
+        
+        Parameters
+        ----------
+        folded : bool, default=True
+            Rename elements in folded structure as well as tiled structure
+            (if there is no folded structure then this does nothing)
+        **name_pairs : dict[str]
+            A dictionary containing key:value pairs where the key is the old
+            element name and the value is the new element name.
+        """
         elem = self.elem
         for old,new in name_pairs.items():
             for i in range(len(self.elem)):
@@ -1212,6 +1223,19 @@ class Structure(Sobj):
 
     # test needed
     def reset_axes(self,axes=None):
+        """Reset the structure's axes, k-space axes, and center.
+        
+        Notes
+        -----
+        If `axes` is given, this function will remove the previous folded
+        structure (as new axes could invalidate the tiling) and then set
+        `self.axes` to the new axes, update the k-space axes, and set the
+        center of the cell to be the (0.5, 0.5, 0.5) point.
+
+        If `axes` are not given (e.g. `axes=None`, the default), then this
+        function will reuse the same axes as the current structure, reset the
+        k-space axes, and set the cell center at the (0.5, 0.5, 0.5) point.
+        """
         if axes is None:
             axes = self.axes
         else:
@@ -1247,6 +1271,9 @@ class Structure(Sobj):
 
 
     def write_axes(self):
+        """Write the unit cell axes as a string.
+        Only works for dim=3.
+        """
         c = ''
         for a in self.axes:
             c+='{0:12.8f} {1:12.8f} {2:12.8f}\n'.format(a[0],a[1],a[2])
@@ -1256,6 +1283,9 @@ class Structure(Sobj):
 
     
     def corners(self):
+        """Calculate vectors corresponding to the 8 corners
+        of the unit cell. Only implemented for dim=3
+        """
         a = self.axes
         c = np.array([(0,0,0),
                    a[0],
@@ -1353,16 +1383,20 @@ class Structure(Sobj):
         Parameters
         ----------
         rmin_edge : float-like or array-like, default=1e-8
-            Minimum acceptable distance from the cell edges to any atom in the molecule, potentially specified per-axis.
+            Minimum acceptable distance from the cell edges to any atom in the
+            molecule, potentially specified per-axis.
 
         Note
         ----
-        The default rmin_edge of 1e-8 is designed to just barely contain the molecule. It is
-        important to ensure that for larger, non-periodic molecular systems or atoms that the unit
-        cell size is sufficiently large to contain the charge density otherwise the molecular system
-        will interact with the neighboring periodic replica, resulting in unphysical electrostatic interactions
+        The default rmin_edge of 1e-8 is designed to just barely contain the 
+        molecule. It is important to ensure that for larger, non-periodic 
+        molecular systems or atoms that the unit cell size is sufficiently 
+        large to contain the charge density otherwise the molecular system
+        will interact with the neighboring periodic replica, resulting in
+        unphysical electrostatic interactions
 
-        For reference, 5 Bohr contains >99.3% of the charge density around a Hydrogen atom.
+        For reference, 5 Bohr contains ~99.3% of the charge density around
+        a Hydrogen atom.
         """
         if hasattr(rmin_edge, '__len__'):
             rmin_edge = np.abs(np.asarray(rmin_edge, dtype=float).flatten())
@@ -1523,6 +1557,7 @@ class Structure(Sobj):
 
 
     def is_open(self):
+        """Check if the structure has open boundary conditions"""
         return not self.any_periodic()
     #end def is_open
 
@@ -1533,6 +1568,7 @@ class Structure(Sobj):
 
 
     def any_periodic(self):
+        """Check if the structure is periodic in any dimension"""
         has_cell    = self.has_axes()
         pbc = False
         for bc in self.bconds:
@@ -1542,8 +1578,9 @@ class Structure(Sobj):
         return periodic
     #end def any_periodic
 
-    
+
     def all_periodic(self):
+        """Check if the structure is periodic in all dimensions"""
         has_cell = self.has_axes()
         pbc = True
         for bc in self.bconds:
@@ -1603,8 +1640,9 @@ class Structure(Sobj):
       return len(ukmags)
     #end def count_kshells
 
-    
-    def volume(self):
+
+    def volume(self) -> float:
+        """Calculate the volume of the unit cell."""
         if not self.has_axes():
             return None
         else:
