@@ -115,8 +115,11 @@ Read structure functions
 Module contents
 ---------------
 """
-
+from __future__ import annotations
 import os
+from os import PathLike
+from pathlib import Path
+from typing import Sequence
 import numpy as np
 from copy import deepcopy
 from random import randint
@@ -130,6 +133,7 @@ from numpy import (
     sqrt,
 )
 from numpy.linalg import inv, det, norm
+import numpy.typing as npt
 from .unit_converter import convert
 from .numerics import nearest_neighbors, convex_hull, voronoi_neighbors
 from .periodic_table import is_element
@@ -140,13 +144,13 @@ from . import numpy_extensions as npe
 
 try:
     from scipy.special import erfc
-except:
+except ImportError, ModuleNotFoundError:
     erfc = unavailable('scipy.special','erfc')
 #end try
 try:
     import matplotlib.pyplot as plt
     from matplotlib.pyplot import plot,subplot,title,xlabel,ylabel
-except:
+except ImportError, ModuleNotFoundError:
     plot,subplot,title,xlabel,ylabel,plt = unavailable('matplotlib.pyplot','plot','subplot','title','xlabel','ylabel','plt')
 #end try
 
@@ -170,7 +174,7 @@ except:
 ##end try
 try:
     import spglib
-except:
+except ImportError, ModuleNotFoundError:
     spglib = unavailable('spglib')
 #end try
 
@@ -201,12 +205,12 @@ except:
 #
 try:
     from CifFile import CifFile
-except:
+except ImportError, ModuleNotFoundError:
     CifFile = unavailable('CifFile','CifFile')
 #end try
 try:
     from cif2cell.uctools import CellData
-except:
+except ImportError, ModuleNotFoundError:
     CellData = unavailable('cif2cell.uctools','CellData')
 #end try
 
@@ -214,7 +218,7 @@ except:
 cif2cell_unit_dict = dict(angstrom='A',bohr='B',nm='nm')
 
 
-def read_cif_celldata(filepath,block=None,grammar='1.1'):
+def read_cif_celldata(filepath: PathLike, block=None, grammar: str = '1.1'):
     # read cif file with PyCifRW
     path,cif_file = os.path.split(filepath)
     if path!='':
@@ -257,15 +261,20 @@ def read_cif_celldata(filepath,block=None,grammar='1.1'):
 
 
 
-def read_cif_cell(filepath,block=None,grammar='1.1',cell='prim'):
-    cd = read_cif_celldata(filepath,block,grammar)
+def read_cif_cell(
+    filepath: PathLike, block=None, grammar: str = "1.1", cell: str = "prim"
+):
+    cd = read_cif_celldata(filepath, block, grammar)
 
     if cell.startswith('prim'):
         cell = cd.primitive()
     elif cell.startswith('conv'):
         cell = cd.conventional()
     else:
-        error('cell argument must be primitive or conventional\nyou provided: {0}'.format(cell),'read_cif_cell')
+        error((
+            'cell argument must be primitive or conventional\n'
+            'you provided: {0}'.format(cell)
+        ),'read_cif_cell')
     #end if
 
     return cell
@@ -273,8 +282,14 @@ def read_cif_cell(filepath,block=None,grammar='1.1',cell='prim'):
 
 
 
-def read_cif(filepath,block=None,grammar='1.1',cell='prim',args_only=False):
-    if isinstance(filepath,str):
+def read_cif(
+    filepath: PathLike | str,
+    block=None,
+    grammar: str = "1.1",
+    cell: str = "prim",
+    args_only: bool = False,
+):
+    if isinstance(filepath, str | Path):
         cell = read_cif_cell(filepath,block,grammar,cell)
     else:
         cell = filepath
@@ -322,7 +337,7 @@ def negate(expr):
 #end def negate
 
 
-def kmesh(kaxes,dim,shift=None):
+def kmesh(kaxes: npt.ArrayLike, dim: list[int], shift: npt.ArrayLike = None):
     '''
     Create a Monkhorst-Pack k-point mesh 
     '''
@@ -353,7 +368,7 @@ def kmesh(kaxes,dim,shift=None):
 
 
 
-def reduce_tilematrix(tiling):
+def reduce_tilematrix(tiling: npt.ArrayLike):
     tiling = np.array(tiling)
     t = np.array(tiling,dtype=int)
     if np.abs(tiling-t).sum()>1e-6:
@@ -441,7 +456,26 @@ def reduce_tilematrix(tiling):
 
 
 
-def rotate_plane(plane,angle,points,units='degrees'):
+def rotate_plane(plane: str, angle: float, points: npt.NDArray, units: str = 'degrees'):
+    """Rotate a set of points about a unit axis perpendicular to a supplied plane.
+    
+    Parameters
+    ----------
+    plane : {xy, yx, xz, zx, yz, zy}
+        The plane that defines the normal to rotate around.
+        Flipping the order rotates in the opposite direction.
+    angle : float
+        The angle to rotate by.
+    points : ndarray of shape (3,N)
+        Array of points to apply the rotation to.
+    units : {'degrees', 'radians'}, default='degrees'
+        Units of the supplied angle.
+
+    Returns
+    -------
+    rotated_points : ndarray of shape (3,N)
+        The rotated points.
+    """
     if units=='degrees':
         angle *= pi/180
     elif not units.startswith('rad'):
@@ -1048,7 +1082,26 @@ class Structure(Sobj):
     #end def __init__
 
 
-    def check_consistent(self,tol=1e-8,exit=True,message=False):
+    def check_consistent(self, tol=1e-8, exit=True, message=False):
+        """Check if the real space and reciprocal space axes match within tolerance.
+
+        Parameters
+        ----------
+        tol : float, default=1e-8
+            Tolerance for matching.
+        exit : bool, default=True
+            Optionally raise an error and exit if the axes do not match.
+        message : bool, default=False
+            Optionally return a message with the axis information.
+
+        Returns
+        -------
+        consistent : bool
+            Bool indicating whether or not the axes are consistent
+        message : str, optional
+            Message with the axis information.
+            Will be empty if axes are consistent
+        """
         msg = ''
         if self.has_axes():
             kaxes = 2*pi*inv(self.axes).T
@@ -1110,24 +1163,38 @@ class Structure(Sobj):
     #end def check_consistent
 
 
-    def set_axes(self,axes):
+    def set_axes(self, axes: npt.ArrayLike):
+        """Set the axes of a structure. See `reset_axes()` for more."""
         self.reset_axes(axes)
     #end def set_axes
 
 
-    def set_bconds(self,bconds):
-        self.bconds = np.array(tuple(bconds),dtype=str)
+    def set_bconds(self, bconds: str | Sequence[str]):
+        """Set the boundary conditions of a structure.
+
+        Parameters
+        ----------
+        bconds : str | Sequence[str]
+            Boundary conditions as a string or sequence of strings.
+            The form of a string should be some combination of 'p' and 'o'
+            to indicate periodic or open boundary conditions.
+        """
+        self.bconds = np.array(tuple(bconds), dtype=str)
     #end def bconds
 
 
-    def set_elem(self,elem):
-        self.elem = np.array(elem,dtype=object)
+    def set_elem(self, elem: npt.ArrayLike):
+        """Set the elements of a structure with a list or array of atomic symbols."""
+        self.elem = np.array(elem, dtype=object)
     #end def set_elem
 
     
-    def set_pos(self,pos):
-        self.pos = np.array(pos,dtype=float)
-        if len(self.pos)!=len(self.elem):
+    def set_pos(self, pos: npt.ArrayLike):
+        """Set the positions of a structure with an Nx3 array. Will raise an
+        error if the number of positions does not match the number of elements.
+        """
+        self.pos = np.array(pos, dtype=float)
+        if len(self.pos) != len(self.elem):
             self.error(
                 "Atomic positions must have same length as elem.\n"
                 "elem length: {}\n"
@@ -1139,11 +1206,15 @@ class Structure(Sobj):
     #end def set_pos
 
 
-    def set_mag(self,mag=None):
+    def set_mag(self, mag: npt.ArrayLike | None = None):
+        """Set the magnetization for each element in the structure. Will raise
+        an error if the length of the magnetization list does not match the
+        number of elements.
+        """
         if mag is None:
             self.mag = None
         else:
-            self.mag = np.array(mag,dtype=object)
+            self.mag = np.array(mag, dtype=object)
             if len(self.mag)!=len(self.elem):
                 self.error(
                     "Magnetic moments must have same length as elem.\n"
@@ -1157,7 +1228,12 @@ class Structure(Sobj):
     #end def set_mag
 
 
-    def set_frozen(self,frozen=None):
+    def set_frozen(self, frozen: npt.ArrayLike | None = None):
+        """Freeze specific coordinates in a structure with a mask array.
+        Should have the same shape as the position array, with ``True``
+        indicating a position should be frozen and ``False`` indicating
+        that the positions are free to move.
+        """
         if frozen is None:
             self.frozen = None
         else:
@@ -1176,11 +1252,13 @@ class Structure(Sobj):
 
 
     def size(self):
+        """Get the number of elements in a structure"""
         return len(self.elem)
     #end def size
 
     
     def has_axes(self):
+        """Check if the structure has a unit cell."""
         return len(self.axes)==self.dim
     #end def has_axes
 
@@ -1227,8 +1305,12 @@ class Structure(Sobj):
     #end def has_folded
 
 
-    def set_folded_structure(self,folded):
-        if not isinstance(folded,Structure):
+    def set_folded_structure(self, folded: Structure):
+        """Set the folded structure for a tiled structure.
+        Will always check that the folded structure can be used to create the
+        tiled structure.
+        """
+        if not isinstance(folded, Structure):
             self.error(
                 "cannot set folded structure\n"
                 "folded structure must be an object with type Structure\n"
@@ -1245,6 +1327,7 @@ class Structure(Sobj):
 
 
     def remove_folded_structure(self):
+        """Remove a folded structure, and delete the tiling matrix"""
         self.folded_structure = None
         if 'tmatrix' in self:
             del self.tmatrix
@@ -1253,12 +1336,20 @@ class Structure(Sobj):
 
 
     def has_folded_structure(self):
+        """Check if the structure has a folded structure."""
         return self.folded_structure is not None
     #end def has_folded_structure
 
 
     # test needed
-    def group_atoms(self,folded=True):
+    def group_atoms(self, folded=True):
+        """Group the atoms by their element type, sorting in alphabetical order
+        
+        Parameters
+        ----------
+        folded : bool, default=True
+            Optionally sort the folded structure, if it exists.
+        """
         if len(self.elem)>0:
             order = self.elem.argsort()
             if (self.elem!=self.elem[order]).any():
@@ -1302,7 +1393,7 @@ class Structure(Sobj):
     # test needed
     def reset_axes(self,axes=None):
         """Reset the structure's axes, k-space axes, and center.
-        
+
         Notes
         -----
         If `axes` is given, this function will remove the previous folded
@@ -4208,7 +4299,31 @@ class Structure(Sobj):
     #end def fold
 
 
-    def tilematrix(self,small=None,tol=1e-6,status=False):
+    def tilematrix(self, small: Structure = None, tol: float = 1e-6, status=False):
+        """Determine the tiling matrix that turns a small structure into
+        the current structure.
+
+        Parameters
+        ----------
+        small : Structure, optional
+            The structure to check against when determining the tiling matrix.
+            If this is not provided, then this uses `self.folded_structure` if
+            it is available.
+        tol : float, default=1e-6
+            Tolerance for checking if the smaller structure can be integer
+            tiled into the larger structure.
+        status : bool, default=False
+            Optionally return the status of the tile matrix determination.
+
+        Returns
+        -------
+        tilemat : NDArray of int with shape 3
+            The tiling matrix that turns the smaller structure into the larger
+            structure.
+        status : bool, optional
+            Toggled by `status`. ``False`` if an integer tiling matrix can not
+            be determined, otherwise ``True``.
+        """
         if small is None:
             if self.folded_structure is not None:
                 small = self.folded_structure
