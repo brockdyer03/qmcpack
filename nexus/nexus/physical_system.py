@@ -36,53 +36,20 @@ import os
 from copy import deepcopy
 import numpy as np
 from .developer import DevBase, obj
-from .unit_converter import convert
-from .periodic_table import is_element, ptable
+from .periodic_table import is_element
 from .structure import Structure, generate_structure, read_structure
 
 
-class Matter(DevBase):
-    particle_collection = None
-
-    @classmethod
-    def set_elements(cls,elements):
-        cls.elements = set(elements)
-    #end def set_elements
-
-    @classmethod
-    def set_particle_collection(cls,pc):
-        cls.particle_collection = pc
-    #end def set_particle_collection
-
-    @classmethod
-    def new_particles(cls,*particles,**named_particles):
-        cls.particle_collection.add_particles(*particles,**named_particles)
-    #end def new_particles
-
-    def is_element(self,name,symbol=False):
-        return is_element(name,symbol=symbol)
-    #end def is_element
-#end class Matter
-
-
-class Particle(Matter):
-    def __init__(self,name=None,mass=None,charge=None,spin=None):
-        self.name   = name  
-        self.mass   = mass  
-        self.charge = charge
-        self.spin   = spin  
-    #end def __init__
-
-    def set_count(self,count):
-        self.count  = count 
-    #end def set_count
-#end class Particle
-
-
-class Ion(Particle):
-    def __init__(self,name=None,mass=None,charge=None,spin=None,
-                 protons=None,neutrons=None):
-        Particle.__init__(self,name,mass,charge,spin)
+class Ion(DevBase):
+    def __init__(
+        self,
+        name:     str | None = None,
+        mass:     float | None = None,
+        charge:   int | None = None,
+        spin:     int | None = None,
+        protons:  int | None = None,
+        neutrons: int | None = None,
+    ):
         self.protons  = protons
         self.neutrons = neutrons
     #end def __init__
@@ -98,15 +65,23 @@ class Ion(Particle):
 
 
 class PseudoIon(Ion):
-    def __init__(self,name=None,mass=None,charge=None,spin=None,
-                 protons=None,neutrons=None,core_electrons=None):
+    def __init__(
+        self,
+        name:           str | None = None,
+        mass:           float | None = None,
+        charge:         int | None = None,
+        spin:           int | None = None,
+        protons:        int | None = None,
+        neutrons:       int | None = None,
+        core_electrons: int | None = None,
+    ):
         Ion.__init__(self,name,mass,charge,spin,protons,neutrons)
         self.core_electrons    = core_electrons    
     #end def __init__
 #end class PseudoIon
 
 
-class Particles(Matter):
+class Particles(DevBase):
     def __init__(self,*particles,**named_particles):
         self.add_particles(*particles,**named_particles)
     #end def __init__
@@ -221,40 +196,17 @@ class Particles(Matter):
     #end def electron_counts
 #end class Particles
 
-me_amu = convert(1.,'me','amu')
 
-plist = [
-    Particle('up_electron'  ,1.0,-1, 1),
-    Particle('down_electron',1.0,-1,-1),
-    ]
+class PhysicalSystem(DevBase):
 
-for name,a in ptable.elements.items():
-    spin = 0 # don't have this data
-    protons  = a.atomic_number
-    neutrons = int(round(a.atomic_weight['amu']-a.atomic_number))
-    p = Ion(a.symbol,a.atomic_weight['me'],a.atomic_number,spin,protons,neutrons)
-    plist.append(p)
-#end for
-for name,iso in ptable.isotopes.items():
-    for mass_number,a in iso.items():
-        spin = 0 # don't have this data
-        protons  = a.atomic_number
-        neutrons = int(round(a.atomic_weight['amu']-a.atomic_number))
-        p = Ion(a.symbol+'_'+str(mass_number),a.atomic_weight['me'],a.atomic_number,spin,protons,neutrons)
-        plist.append(p)
-    #end for
-#end for
-
-Matter.set_elements(ptable.elements.keys())
-Matter.set_particle_collection(Particles(plist))
-
-del plist
-
-
-
-class PhysicalSystem(Matter):
-
-    def __init__(self,structure=None,net_charge=0,net_spin=0,particles=None,**valency):
+    def __init__(
+        self,
+        structure=None,
+        net_charge=0,
+        net_spin=0,
+        particles=None,
+        **valency,
+    ):
         self.pseudized = False
 
         if structure is None:
