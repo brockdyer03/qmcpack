@@ -84,6 +84,11 @@ RUN wget https://github.com/pyscf/pyscf/archive/refs/tags/v${PYSCF_VERSION}.tar.
 ENV PYTHONPATH=/opt/pyscf
 ENV LD_LIBRARY_PATH=/opt/lib
 
+# Invalidate layer cache for the following steps to ensure QMCPACK is always built from the latest source code, and not from a cached layer
+# Workflow configuration sets GIT_COMMIT_SHA to the current commit hash
+ARG GIT_COMMIT_SHA
+RUN echo "Building from commit: $GIT_COMMIT_SHA"
+
 WORKDIR /scratch
 ## Build a specific version $QMCPACK_VERSION of QMCPACK using the release artifacts
 #RUN wget https://github.com/QMCPACK/qmcpack/archive/refs/tags/v${QMCPACK_VERSION}.tar.gz && tar xvzf v${QMCPACK_VERSION}.tar.gz && pwd && \
@@ -117,6 +122,7 @@ RUN mkdir -p /opt/qmcpack && cd /opt/qmcpack && \
     # cleanup
     rm -r -f /scratch/build_qmcpack_mpi /scratch/build_qmcpack_complex_mpi /opt/qmcpack/qmcpack_git
 ENV PATH=${PATH}:/opt/qmcpack/bin
+ENV PYTHONPATH=${PYTHONPATH}:/opt/qmcpack
 
 # Default user and directory
 USER $USERNAME
