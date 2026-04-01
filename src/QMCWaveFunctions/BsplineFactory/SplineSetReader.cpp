@@ -28,7 +28,8 @@
 #endif
 #include "Message/CommOperators.h"
 #include "spline2/SplineUtils.h"
-#include "spline2/MultiBsplineBase.hpp"
+#include "spline2/MultiBspline.hpp"
+#include "spline2/MultiBsplineOffload.hpp"
 
 
 namespace qmcplusplus

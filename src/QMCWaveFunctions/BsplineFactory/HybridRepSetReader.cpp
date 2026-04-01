@@ -35,6 +35,8 @@
 #include "OneSplineOrbData.hpp"
 #include "spline2/SplineUtils.h"
 #include "Message/CommOperators.h"
+#include "spline2/MultiBspline.hpp"
+#include "spline2/MultiBsplineOffload.hpp"
 
 namespace qmcplusplus
 {
