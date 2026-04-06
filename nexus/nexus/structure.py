@@ -2295,6 +2295,7 @@ class Structure(Sobj):
 
     # test needed
     def translate(self,v):
+        """Equivalent to ``Structure.slide()`` with ``recenter=True``."""
         v = np.array(v)
         pos = self.pos
         for i in range(len(pos)):
@@ -2309,6 +2310,15 @@ class Structure(Sobj):
 
     # test needed
     def slide(self,v,recenter=True):
+        """Slide the atoms in a structure.
+        
+        Parameters
+        ----------
+        v : ArrayLike
+            Vector for translating the atoms in the structure.
+        recenter : bool, default=True
+            Optionally set the cell center according to the vector ``v``.
+        """
         v = np.array(v)
         pos = self.pos
         for i in range(len(pos)):
@@ -2325,6 +2335,7 @@ class Structure(Sobj):
 
     # test needed
     def zero_corner(self):
+        """Translate the atoms and cell so the corner is at the origin."""
         corner = self.center-self.axes.sum(0)/2
         self.translate(-corner)
     #end def zero_corner
@@ -2332,6 +2343,7 @@ class Structure(Sobj):
 
     # test needed
     def locate_simple(self,pos):
+        """Locate the nearest points to the position(s) ``pos``."""
         pos = np.array(pos)
         if pos.shape==(self.dim,):
             pos = [pos]

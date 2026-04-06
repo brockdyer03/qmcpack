@@ -84,6 +84,7 @@
 import sys
 import inspect
 import numpy as np
+import numpy.typing as npt
 from numpy import pi, exp, sqrt, sin, cos
 from numpy.linalg import norm
 from .developer import obj, unavailable, error
@@ -1307,7 +1308,29 @@ def func_fit(x,y,fitting_function,p0,cost=least_squares):
 #end def func_fit
 
 
-def distance_table(p1,p2,ordering=0):
+def distance_table(
+    p1: npt.ArrayLike, p2: npt.ArrayLike, ordering: int = 0
+) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+    """Calculate the distance between each position in two arrays.
+
+    Parameters
+    ----------
+    p1 : ArrayLike
+        An array of N-dimensional positions.
+    p2 : ArrayLike
+        An array of positions with the same dimensionality as ``p1``.
+    ordering : {0, 1, 2}, default=0
+        If not zero, this will return an additional ``order`` array that
+        labels the points from smallest distance to largest distance.
+
+    Returns
+    -------
+    dt : ArrayLike of float
+        2D array of the distances between the points in ``p1`` and ``p2``.
+    order : ArrayLike of int, only for ordering!=0
+        Result of ``np.argsort``, sorting the distance table along the
+        first or second axes of the distance table.
+    """
     n1 = len(p1)
     n2 = len(p2)
     same = id(p1)==id(p2)
@@ -1348,7 +1371,42 @@ def distance_table(p1,p2,ordering=0):
 
 
 
-def nearest_neighbors(n,points,qpoints=None,return_distances=False,slow=False):
+def nearest_neighbors(
+    n: int,
+    points: npt.ArrayLike,
+    qpoints: npt.ArrayLike | None = None,
+    return_distances: bool = False,
+    slow: bool = False,
+) -> npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+    """Find the ``n`` nearest neighbor(s) to a set of points.
+
+    If SciPy is present, then this uses the ``KDTree`` class from SciPy
+    to get the nearest neighbor(s), otherwise this uses ``distance_table()``.
+
+    Parameters
+    ----------
+    n : int
+        Number of nearest neighbors to calculate.
+    points : ArrayLike
+        Array of reference points for the nearest neighbor calculation.
+    qpoints : ArrayLike, optional
+        Array of points to query for the nearest neighbor calculation.
+        If this is ``None``, it will be set to ``points``.
+    return_distances : bool, default=False
+        Optionally return the distances between the nearest neighbors in
+        addition to the indices of the nearest neighbors
+    slow : bool, default=False
+        Optionally force the use of ``distance_table()`` to find the
+        nearest neighbors, even if SciPy is available.
+
+    Returns
+    -------
+    nn : NDArray of int
+        Array of the ``n`` nearest neighbors to the requested query
+        points.
+    dist : NDArray of float, only for return_distances=True
+        Array of the Euclidean distances between the nearest neighbors.
+    """
     extra = 0
     if qpoints is None:
         qpoints=points
