@@ -725,7 +725,13 @@ def periodic_table():
 
     nunit('periodic_table')
 
+    nunit('call_elements')
+
     nunit('is_element')
+
+    nunit('element_set')
+
+    nunit('representation')
 
     nunit_all()
 #end def periodic_table
@@ -746,6 +752,8 @@ def numerics():
     nunit('simstats')
 
     nunit('equilibration_length')
+
+    nunit('jackknife')
 
     nunit('morse')
 
@@ -800,6 +808,8 @@ def grid_functions():
     nunit('grid_cell_volumes')
 
     nunit('grid_unit_metric')
+
+    nunit('grid_function_initialization')
 
     # GridFunction tests
 
@@ -872,6 +882,10 @@ def structure():
     nunit('generate_init')
 
     nunit('crystal_init')
+
+    nunit('change_units')
+
+    nunit('rotate')
 
     nunit('diagonal_tiling')
 
@@ -1330,6 +1344,8 @@ def qmcpack_input():
     nunit('generate_kspace_jastrow')
 
     nunit('excited_state')
+
+    nunit('magnetization_density')
 
     nunit_all()
 #end def qmcpack_input
@@ -1927,7 +1943,7 @@ def user_examples(label):
                     dgen = obj(dgen)
                     dref = obj(dref)
                     msg = 'reference and generated input files differ\n'
-                    msg += 'reference file: '+filepath+'\n'
+                    msg += 'reference file: '+os.path.realpath(filepath)+'\n'
                     msg += 'reference file difference\n'
                     msg += 40*'='+'\n'
                     msg += str(dref)

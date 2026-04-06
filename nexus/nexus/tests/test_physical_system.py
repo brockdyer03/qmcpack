@@ -65,7 +65,7 @@ def test_particle_initialization():
 
     # matter
     elements = Matter.elements
-    assert(len(elements)==103)
+    assert(len(elements)==119)
     assert('Si' in elements)
 
     pc = Matter.particle_collection
@@ -89,7 +89,8 @@ def test_particle_initialization():
     
     si = pc.Si
     assert(si.name=='Si')
-    assert(value_eq(si.mass,51197.6459833))
+    print(si.mass)
+    assert(value_eq(si.mass,51195.82309476658))
     assert(si.charge==14)
     assert(si.protons==14)
     assert(si.neutrons==14)

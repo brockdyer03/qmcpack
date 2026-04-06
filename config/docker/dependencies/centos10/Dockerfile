@@ -11,6 +11,9 @@ RUN dnf install -y ninja-build
 RUN dnf install -y rsync # Nexus hard requirement
 RUN dnf install -y python3-numpy
 RUN dnf install -y python3-h5py
+RUN dnf install -y python3-pytest
+RUN dnf install -y python3-pytest-cov
+RUN dnf install -y python3-pytest-order
 
 ## Add a user different from root for OpenMPI
 RUN adduser -u 1000 -d /home/user -s /bin/bash user

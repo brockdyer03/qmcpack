@@ -153,6 +153,7 @@ HybridRepSetReader<ST>::HybridRepSetReader(EinsplineSetBuilder* e, bool use_dupl
 template<typename ST>
 std::unique_ptr<SPOSet> HybridRepSetReader<ST>::create_spline_set(const std::string& my_name,
                                                                   int spin,
+                                                                  int ndistributed,
                                                                   const BandInfoGroup& bandgroup)
 {
   const int N = bandgroup.getNumDistinctOrbitals();
@@ -281,7 +282,7 @@ std::unique_ptr<SPOSet> HybridRepSetReader<ST>::create_spline_set(const std::str
 
   {
     Timer now;
-    SplineUtils<ST>::bcast(multi_splines, *myComm);
+    SplineUtils<ST>::bcast(multi_splines, 0, *myComm);
     hybrid_center_orbs.bcast_atomic_tables(*myComm);
     app_log() << "  Time to bcast the table = " << now.elapsed() << std::endl;
   }
@@ -760,12 +761,12 @@ void HybridRepSetReader<ST>::initialize_hybrid_pio_gather(const int spin,
       std::vector<int> offset(band_groups.size());
       for (int i = 0; i < offset.size(); i++)
         offset[i] = band_groups[i] * 2;
-      SplineUtils<ST>::gatherv(multi_splines, offset, group_leader_comm);
+      SplineUtils<ST>::gatherv(multi_splines, 0, offset, group_leader_comm);
       multi_atomic_splines.gather_atomic_tables(group_leader_comm, offset);
     }
     else
     {
-      SplineUtils<ST>::gatherv(multi_splines, band_groups, group_leader_comm);
+      SplineUtils<ST>::gatherv(multi_splines, 0, band_groups, group_leader_comm);
       multi_atomic_splines.gather_atomic_tables(group_leader_comm, band_groups);
     }
 

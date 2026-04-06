@@ -30,6 +30,9 @@
 #include "spline2/SplineUtils.h"
 #include "spline2/MultiBspline.hpp"
 #include "spline2/MultiBsplineOffload.hpp"
+#if defined(HAVE_MPI)
+#include "spline2/MultiBsplineMPIShared.hpp"
+#endif
 
 
 namespace qmcplusplus
@@ -42,14 +45,27 @@ SplineSetReader<ST>::SplineSetReader(EinsplineSetBuilder* e, bool use_duplex_spl
 template<typename ST>
 std::unique_ptr<SPOSet> SplineSetReader<ST>::create_spline_set(const std::string& my_name,
                                                                int spin,
+                                                               int ndistributed,
                                                                const BandInfoGroup& bandgroup)
 {
   const int N = bandgroup.getNumDistinctOrbitals();
 
-  if (use_duplex_splines_)
-    app_log() << "  Using complex einspline table" << std::endl;
-  else
-    app_log() << "  Using real einspline table" << std::endl;
+  if (use_offload)
+  {
+    if (ndistributed > 1)
+      app_warning()
+          << "Offload implemenation doesn't distribute the memory of spline coefficients. Overriding ndistributed to 1."
+          << std::endl;
+    ndistributed = 1;
+  }
+
+  auto dist_comm_ptr = std::make_unique<Communicate>(*myComm, myComm->size() / ndistributed);
+  auto& dist_comm(*dist_comm_ptr);
+
+  app_log() << "  Using " << (use_duplex_splines_ ? "complex" : "real") << " einspline table." << std::endl;
+  if (ndistributed > 1)
+    app_log() << "  Distributed across " << ndistributed << " MPI ranks." << std::endl;
+
   const TinyVector<int, 3> half_g = use_duplex_splines_
       ? TinyVector<int, 3>(0, 0, 0)
       : computeHalfG(mybuilder->TargetPtcl.getLattice().BoxBConds, mybuilder->primcell_kpoints,
@@ -63,6 +79,11 @@ std::unique_ptr<SPOSet> SplineSetReader<ST>::create_spline_set(const std::string
   std::unique_ptr<MultiBsplineBase<ST>> multi_splines_ptr;
   if (use_offload)
     multi_splines_ptr = std::make_unique<MultiBsplineOffload<ST>>(xyz_grid, xyz_bc, num_splines);
+#if defined(HAVE_MPI)
+  else if (ndistributed > 1)
+    multi_splines_ptr =
+        std::make_unique<MultiBsplineMPIShared<ST>>(xyz_grid, xyz_bc, num_splines, std::move(dist_comm_ptr));
+#endif
   else
     multi_splines_ptr = std::make_unique<MultiBspline<ST>>(xyz_grid, xyz_bc, num_splines);
 
@@ -120,10 +141,10 @@ std::unique_ptr<SPOSet> SplineSetReader<ST>::create_spline_set(const std::string
 
   if (!foundspline)
   {
-    multi_splines.flush_zero();
+    multi_splines.flush_zero(dist_comm.rank());
 
     Timer now;
-    initialize_spline_pio_gather(spin, bandgroup, half_g, bspline->BandIndexMap, multi_splines);
+    initialize_spline_pio_gather(spin, bandgroup, half_g, bspline->BandIndexMap, multi_splines, dist_comm);
     app_log() << "  SplineSetReader initialize_spline_pio " << now.elapsed() << " sec" << std::endl;
 
     if (saveSplineCoefs && myComm->rank() == 0)
@@ -146,7 +167,8 @@ std::unique_ptr<SPOSet> SplineSetReader<ST>::create_spline_set(const std::string
   {
     myComm->barrier();
     Timer now;
-    SplineUtils<ST>::bcast(multi_splines, *myComm);
+    SplineUtils<ST>::bcast(multi_splines, dist_comm.rank(), dist_comm.getInterGroupComm());
+    myComm->barrier();
     app_log() << "  Time to bcast the table = " << now.elapsed() << std::endl;
   }
 
@@ -158,17 +180,24 @@ void SplineSetReader<ST>::initialize_spline_pio_gather(const int spin,
                                                        const BandInfoGroup& bandgroup,
                                                        const TinyVector<int, 3>& half_g,
                                                        const aligned_vector<int>& band_index_map,
-                                                       MultiBsplineBase<ST>& multi_splines) const
+                                                       MultiBsplineBase<ST>& multi_splines,
+                                                       Communicate& dist_comm) const
 {
+  const auto& block_offsets = multi_splines.getBlockOffsets();
+  const size_t iblock       = dist_comm.rank();
+  auto& comm                = dist_comm.getInterGroupComm();
   //distribute bands over processor groups
-  int Nbands            = bandgroup.getNumDistinctOrbitals();
-  const int Nprocs      = myComm->size();
-  const int Nbandgroups = std::min(Nbands, Nprocs);
-  Communicate band_group_comm(*myComm, Nbandgroups);
+  const int orb_block_start = use_duplex_splines_ ? block_offsets[iblock] / 2 : block_offsets[iblock];
+  const int orb_block_end   = use_duplex_splines_ ? block_offsets[iblock + 1] / 2 : block_offsets[iblock + 1];
+  const int Nbands          = std::min(orb_block_end, bandgroup.getNumDistinctOrbitals()) - orb_block_start;
+  const int Nprocs          = comm.size();
+  const int Nbandgroups     = Nbands > 0 ? std::min(Nbands, Nprocs) : 1;
+
+  Communicate band_group_comm(comm, Nbandgroups);
   std::vector<int> band_groups(Nbandgroups + 1, 0);
   FairDivideLow(Nbands, Nbandgroups, band_groups);
-  int iorb_first = band_groups[band_group_comm.getGroupID()];
-  int iorb_last  = band_groups[band_group_comm.getGroupID() + 1];
+  const int iorb_first = orb_block_start + band_groups[band_group_comm.getGroupID()];
+  const int iorb_last  = orb_block_start + band_groups[band_group_comm.getGroupID() + 1];
 
   app_log() << "Start transforming plane waves to 3D B-Splines." << std::endl;
   OneSplineOrbData oneband(mybuilder->MeshSize, half_g, use_duplex_splines_);
@@ -202,10 +231,10 @@ void SplineSetReader<ST>::initialize_spline_pio_gather(const int spin,
         std::vector<int> offset(band_groups.size());
         for (int i = 0; i < offset.size(); i++)
           offset[i] = band_groups[i] * 2;
-        SplineUtils<ST>::gatherv(multi_splines, offset, group_leader_comm);
+        SplineUtils<ST>::gatherv(multi_splines, iblock, offset, group_leader_comm);
       }
       else
-        SplineUtils<ST>::gatherv(multi_splines, band_groups, group_leader_comm);
+        SplineUtils<ST>::gatherv(multi_splines, iblock, band_groups, group_leader_comm);
       app_log() << "  Time to gather the table = " << now.elapsed() << std::endl;
     }
   }

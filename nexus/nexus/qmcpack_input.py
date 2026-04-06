@@ -140,7 +140,7 @@ import numpy as np
 from .numpy_extensions import reshape_inplace
 from .xmlreader import XMLreader, XMLelement
 from .developer import DevBase, obj, hidden, error
-from .periodic_table import is_element
+from .periodic_table import Elements
 from .structure import Structure, Jellium, get_kpath
 from .physical_system import PhysicalSystem
 from .simulation import SimulationInput, SimulationInputTemplate
@@ -6328,11 +6328,11 @@ def generate_hamiltonian(name         = 'h0',
                 pseudos = collection()
                 for ion in ions:
                     label = ion.name
-                    iselem,symbol = is_element(ion.name,symbol=True)
+                    iselem, element = Elements.is_element(ion.name, return_element=True)
                     if label in ppfiles:
                         ppfile = ppfiles[label]
-                    elif symbol in ppfiles:
-                        ppfile = ppfiles[symbol]
+                    elif element.symbol in ppfiles:
+                        ppfile = ppfiles[element.symbol]
                     else:
                         QmcpackInput.class_error('pseudos provided to generate_hamiltonian are incomplete\n  a pseudopotential for ion of type {0} is missing\n  pseudos provided:\n{1}'.format(ion.name,str(ppfiles)))
                     #end if

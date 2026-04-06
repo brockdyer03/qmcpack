@@ -71,7 +71,9 @@ void test_einset_diamond_1x1x1(bool use_offload)
   // add save_coefs="yes" to create an HDF file of spline coefficients for the eval_bspline_spo.py script
   std::string spo_xml = R"XML(
 <sposet_collection type="einspline" href="diamondC_1x1x1.pwscf.h5" tilematrix="1 0 0 0 1 0 0 0 1" twistnum="0" source="ion" meshfactor="1.0" precision="float" gpu="omptarget">
-  <sposet name="updet" size="8"/>
+    <sposet name="updet" size="8">
+        <coefs_mem distributed="2"/>
+    </sposet>
 </sposet_collection>)XML";
 
   if (!use_offload)
