@@ -119,7 +119,7 @@ from __future__ import annotations
 import os
 from os import PathLike
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Sequence, Callable, Iterable
 import numpy as np
 from copy import deepcopy
 from random import randint
@@ -590,7 +590,16 @@ class MaskFilter(DevBase):
 mask_filter = MaskFilter()
             
 
-def optimal_tilematrix(axes,volfac,dn=1,tol=1e-3,filter=trivial_filter,mask=None,nc=5,Tref=None):
+def optimal_tilematrix(
+    axes:   Structure | npt.ArrayLike,
+    volfac: int,
+    dn:     int                  = 1,
+    tol:    float                = 1e-3,
+    filter: Callable             = trivial_filter,
+    mask:   npt.NDArray | None   = None,
+    nc:     int                  = 5,
+    Tref:   npt.ArrayLike | None = None
+):
     if mask is not None:
         mask_filter.set(mask)
         filter = mask_filter
@@ -870,9 +879,6 @@ class Structure(Sobj):
         negative for anions, and zero for neutral systems.
     bconds : NDArray[str]
         Boundary conditions either in all directions or specified for each dimension
-
-    Optional Attributes
-    -------------------
     mag : NDArray[float] or None
         Magnetic moments of each atom, or `None` if system is not magnetized.
     tmatrix : NDArray[int] or None
@@ -897,66 +903,66 @@ class Structure(Sobj):
 
     def __init__(
         self,
-        axes              = None,
-        scale             = 1.,
-        elem              = None,
-        pos               = None,
-        elem_pos          = None,
-        mag               = None,
-        center            = None,
-        kpoints           = None,
-        kweights          = None,
-        kgrid             = None,
-        kshift            = None,
-        permute           = None,
-        units             = None,
-        tiling            = None,
-        rescale           = True,
-        dim               = 3,
-        operations        = None,
-        background_charge = 0,
-        frozen            = None,
-        bconds            = None,
-        posu              = None,
-        use_prim          = None,
-        add_kpath         = False,
-        symm_kgrid        = False,
+        axes:              npt.ArrayLike | None        = None,
+        scale:             int | float                 = 1.,
+        elem:              npt.ArrayLike | None        = None,
+        pos:               npt.ArrayLike | None        = None,
+        elem_pos:          str | None                  = None,
+        mag:               npt.ArrayLike | None        = None,
+        center:            npt.ArrayLike | None        = None,
+        kpoints:           npt.ArrayLike | None        = None,
+        kweights:          npt.ArrayLike | None        = None,
+        kgrid:             int | None                  = None,
+        kshift:            npt.ArrayLike | None        = None,
+        permute:           npt.ArrayLike | None        = None,
+        units:             str | None                  = None,
+        tiling:            npt.ArrayLike[int] | None   = None,
+        rescale:           bool                        = True,
+        dim:               int                         = 3,
+        operations:        str | Iterable[str] | None  = None,
+        background_charge: int                         = 0,
+        frozen:            npt.ArrayLike[bool] | None  = None,
+        bconds:            str | Iterable[str] | None  = None,
+        posu:              npt.ArrayLike | bool | None = None,
+        use_prim:          bool | None                 = None,
+        add_kpath:         bool                        = False,
+        symm_kgrid:        bool                        = False,
     ):
         """Create a new `Structure` object.
 
         Parameters
         ----------
-        axes : ArrayLike or None, default=None
+        axes : ArrayLike, optional
             Lattice vectors of the cell
         scale : int or float, default=1.
             Scaling for all other physical values. See `Structure.rescale()`
             for more information.
-        elem : ArrayLike or None, default=None
+        elem : ArrayLike, optional
             Array of atomic symbols. Overrides `elem_pos`
-        pos : ArrayLike or None, default=None
+        pos : ArrayLike, optional
             Positions of the atoms. Overrides `elem_pos`
-        elem_pos : str or None, default=None
+        elem_pos : str, optional
             Multiline string with each line containing an atom
             where an atom is an element and its position
-        mag : ArrayLike or None, default=None
+        mag : ArrayLike, optional
             Magnetic moments of each atom
-        center : ArrayLike or None, default=None
+        center : ArrayLike, optional
             Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
-        kpoints : ArrayLike or None, default=None
+        kpoints : ArrayLike, optional
             Array containing the positions of k-points
-        kweights : ArrayLike or None, default=None
+        kweights : ArrayLike, optional
             Weight of individual k-points, must be as long as the number of k-points
-        kgrid : int or None, default=None
+        kgrid : int, optional
             Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
             for a more in-depth explanation. Overrides `kpoints` if specified.
-        kshift : ArrayLike or None, default=None
+        kshift : ArrayLike, optional
             Vector to translate k-points if k-grid is specified.
-        permute : ArrayLike or None, default=None
+        permute : ArrayLike, optional
             Vector to permute the structure. See `Structure.permute()` for more information.
-        units : str or None, default=None
+        units : str, optional
             Units of the positions. See `unit_converter.py` for a 
             full list of supported units.
-        tiling : ArrayLike of int or None, default=None
+        tiling : ArrayLike of int, optional
             A vector of ints for tiling the cell in each dimension.
             See `Structure.tile()` for more information.
         rescale : bool, default=True
@@ -965,26 +971,26 @@ class Structure(Sobj):
             the provided structural information.
         dim : int, default=3
             Dimensionality of the Structure. See Notes for more information.
-        operations : str or Iterable[str] or None, default=None
+        operations : str or Iterable[str], optional
             Operations to perform on the structure. See `Structure.set_operations()`
             for more information.
         background_charge : int, default=0
             The total background charge of the system. Positive for cations,
             negative for anions, and zero for neutral systems.
-        frozen : ArrayLike[bool] or None, default=None
+        frozen : ArrayLike[bool], optional
             Mask array of booleans with the same length as the number of atoms
             and width of `dim`. See `Structure.set_frozen()` for more information
-        bconds : str or Iterable[str] or None, default=None
+        bconds : str or Iterable[str], optional
             Boundary conditions either in all directions or specified for each
             dimension. Defaults to periodic in all directions.
-        posu : ArrayLike or bool or None, default=None
+        posu : ArrayLike or bool, optional
             Either the positions of the atoms in units of the lattice parameter
             or a boolean to indicate that `pos` is in units of the lattice parameter,
             in which case this signals to convert them to realspace units.
-        use_prim : bool or None, default=None
+        use_prim : bool, optional
             Option to convert the unit cell to a primitive cell.
             Requires that the `seekpath` package is installed.
-        add_kpath : bool or None, default=None
+        add_kpath : bool, default=False
             Optionally add k-points to the primitive cell. Only
             used if `use_prim` is ``True``.
         symm_kgrid : bool, default=False
@@ -1262,7 +1268,17 @@ class Structure(Sobj):
     #end def has_axes
 
 
-    def operate(self,operations):
+    def operate(self, operations: Iterable[str]):
+        """Perform a number of operations on a structure.
+
+        Parameters
+        ----------
+        operations : Iterable of str
+            The operations to perform on the structure.
+
+            The currently available operations are
+            ``remove_folded_structure`` and ``recenter``.
+        """
         for op in operations:
             if op not in self.operations:
                 self.error(
@@ -1280,26 +1296,31 @@ class Structure(Sobj):
 
 
     def has_tmatrix(self):
+        """Check if the structure has a tiling matrix."""
         return 'tmatrix' in self and self.tmatrix is not None
     #end def has_tmatrix
 
 
     def is_tiled(self):
+        """Check if a structure has both a folded structure and a tiling matrix."""
         return self.has_folded() and self.has_tmatrix()
     #end def is_tiled
 
 
     def set_folded(self,folded):
+        """Alias for ``Structure.set_folded_structure()``"""
         self.set_folded_structure(folded)
     #end def set_folded
 
 
     def remove_folded(self):
+        """Alias for ``Structure.remove_folded_structure()``"""
         self.remove_folded_structure()
     #end def remove_folded
 
     
     def has_folded(self):
+        """Alias for ``Structure.has_folded_structure()``"""
         return self.has_folded_structure()
     #end def has_folded
 
@@ -1417,13 +1438,14 @@ class Structure(Sobj):
 
 
     # test needed
-    def adjust_axes(self,axes):
+    def adjust_axes(self, axes: npt.NDArray):
         self.skew(dot(inv(self.axes),axes))
     #end def adjust_axes
         
 
     # test needed
     def reshape_axes(self,reshaping):
+        """Apply a unitary transformation to the structure's axes."""
         R = np.array(reshaping)
         if np.abs(np.abs(det(R))-1)<1e-6:
             self.axes = dot(self.axes,R)
@@ -1476,7 +1498,14 @@ class Structure(Sobj):
 
     
     # test needed
-    def miller_direction(self,h,k,l,normalize=False):
+    def miller_direction(
+        self,
+        h: int,
+        k: int,
+        l: int,
+        normalize = False,
+    ):
+        """Return a vector corresponding to the provided Miller indices."""
         d = dot((h,k,l),self.axes)
         if normalize:
             d/=norm(d)
@@ -1486,7 +1515,14 @@ class Structure(Sobj):
 
     
     # test needed
-    def miller_normal(self,h,k,l,normalize=False):
+    def miller_normal(
+        self,
+        h: int,
+        k: int,
+        l: int,
+        normalize = False,
+    ):
+        """Return a vector normal to the plane defined by the provided Miller indices."""
         d = dot((h,k,l),self.kaxes)
         if normalize:
             d/=norm(d)
