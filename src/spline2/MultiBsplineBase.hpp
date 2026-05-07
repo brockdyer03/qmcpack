@@ -128,7 +128,6 @@ protected:
   }
 
 public:
-  MultiBsplineBase()                                      = default;
   MultiBsplineBase(const MultiBsplineBase& in)            = delete;
   MultiBsplineBase& operator=(const MultiBsplineBase& in) = delete;
 
@@ -145,6 +144,7 @@ public:
   }
 
   SplineType& getBlock(size_t iblock) { return *spline_blocks[iblock]; }
+  const SplineType& getBlock(size_t iblock) const { return *spline_blocks[iblock]; }
 
   void flush_zero(size_t iblock = 0) const
   { std::fill(spline_blocks[iblock]->coefs, spline_blocks[iblock]->coefs + spline_blocks[iblock]->coefs_size, T(0)); }
@@ -169,7 +169,7 @@ public:
   {
     size_t num_T = 0;
     for (auto spline_m : spline_blocks)
-      num_T += spline_m->coefs_size * sizeof(T);
+      num_T += spline_m->coefs_size;
     return num_T * sizeof(T);
   }
 

@@ -1,3 +1,10 @@
+import pytest
+from . import NexusTestOrder
+pytestmark = pytest.mark.order(NexusTestOrder.REQUIRED_DEPENDENCIES)
+
+from ..generic import generic_settings
+generic_settings.raise_error = True
+
 
 def test_numpy_available():
     from .. import versions

@@ -1,14 +1,12 @@
+import pytest
+from . import NexusTestOrder
+pytestmark = pytest.mark.order(NexusTestOrder.PERIODIC_TABLE)
 
-
-def test_import():
-    from .. import periodic_table
-    from ..periodic_table import Elements
-#end def test_import
-
+from ..generic import generic_settings
+generic_settings.raise_error = True
 
 
 def test_periodic_table():
-    from ..testing import value_eq
     from ..periodic_table import Elements
 
     ref_element_symbols = (

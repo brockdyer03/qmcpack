@@ -1,3 +1,9 @@
+import pytest
+from . import NexusTestOrder
+pytestmark = pytest.mark.order(NexusTestOrder.QMC_FIT)
+
+from ..generic import generic_settings
+generic_settings.raise_error = True
 
 from .. import versions
 from .. import testing
