@@ -531,8 +531,8 @@ def recenter_points(pos, center, axes):
     pos : NDArray
         Array of positions centered around the given center
 
-    Note
-    ----
+    Notes
+    -----
     This function also ensures that points close (within 1e-12) to the minimum edge (-0.5) of the
     cell are placed exactly on that edge. The intent here is to make sure that atoms close to or
     on the leading edge (+0.5) are wrapped around to retain periodicity.
@@ -888,6 +888,74 @@ class Structure(Sobj):
         Mask array of booleans with the same length as the number of atoms
         and width of `dim`, where ``True`` indicates the atoms are locked in
         place and ``False`` indicates they are free to move.
+
+    Parameters
+    ----------
+    axes : ArrayLike, optional
+        Lattice vectors of the cell
+    scale : int or float, default=1.
+        Scaling for all other physical values. See `Structure.rescale()`
+        for more information.
+    elem : ArrayLike, optional
+        Array of atomic symbols. Overrides `elem_pos`
+    pos : ArrayLike, optional
+        Positions of the atoms. Overrides `elem_pos`
+    elem_pos : str, optional
+        Multiline string with each line containing an atom
+        where an atom is an element and its position
+    mag : ArrayLike, optional
+        Magnetic moments of each atom
+    center : ArrayLike, optional
+        Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
+    kpoints : ArrayLike, optional
+        Array containing the positions of k-points
+    kweights : ArrayLike, optional
+        Weight of individual k-points, must be as long as the number of k-points
+    kgrid : int, optional
+        Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
+        for a more in-depth explanation. Overrides `kpoints` if specified.
+    kshift : ArrayLike, optional
+        Vector to translate k-points if k-grid is specified.
+    permute : ArrayLike, optional
+        Vector to permute the structure. See `Structure.permute()` for more information.
+    units : str, optional
+        Units of the positions. See `unit_converter.py` for a 
+        full list of supported units.
+    tiling : ArrayLike of int, optional
+        A vector of ints for tiling the cell in each dimension.
+        See `Structure.tile()` for more information.
+    rescale : bool, default=True
+        `True` will rescale the supplied structural information with the scaling
+        factor provided (see `scale`), `False` sets the `scale` without altering
+        the provided structural information.
+    dim : int, default=3
+        Dimensionality of the Structure. See Notes for more information.
+    operations : str or Iterable[str], optional
+        Operations to perform on the structure. See `Structure.set_operations()`
+        for more information.
+    background_charge : int, default=0
+        The total background charge of the system. Positive for cations,
+        negative for anions, and zero for neutral systems.
+    frozen : ArrayLike[bool], optional
+        Mask array of booleans with the same length as the number of atoms
+        and width of `dim`. See `Structure.set_frozen()` for more information
+    bconds : str or Iterable[str], optional
+        Boundary conditions either in all directions or specified for each
+        dimension. Defaults to periodic in all directions.
+    posu : ArrayLike or bool, optional
+        Either the positions of the atoms in units of the lattice parameter
+        or a boolean to indicate that `pos` is in units of the lattice parameter,
+        in which case this signals to convert them to realspace units.
+    use_prim : bool, optional
+        Option to convert the unit cell to a primitive cell.
+        Requires that the `seekpath` package is installed.
+    add_kpath : bool, default=False
+        Optionally add k-points to the primitive cell. Only
+        used if `use_prim` is ``True``.
+    symm_kgrid : bool, default=False
+        Option for generating a Monkhorst-Pack k-point grid with only
+        symmetric k-points. Requires `spglib` package. 
+        See `Structure.add_symmetrized_mesh` for more information.
     """
 
     operations = obj()
@@ -928,76 +996,6 @@ class Structure(Sobj):
         add_kpath:         bool                        = False,
         symm_kgrid:        bool                        = False,
     ):
-        """Create a new `Structure` object.
-
-        Parameters
-        ----------
-        axes : ArrayLike, optional
-            Lattice vectors of the cell
-        scale : int or float, default=1.
-            Scaling for all other physical values. See `Structure.rescale()`
-            for more information.
-        elem : ArrayLike, optional
-            Array of atomic symbols. Overrides `elem_pos`
-        pos : ArrayLike, optional
-            Positions of the atoms. Overrides `elem_pos`
-        elem_pos : str, optional
-            Multiline string with each line containing an atom
-            where an atom is an element and its position
-        mag : ArrayLike, optional
-            Magnetic moments of each atom
-        center : ArrayLike, optional
-            Defined center of the cell, defaults to the [0.5, 0.5, 0.5] point of the cell
-        kpoints : ArrayLike, optional
-            Array containing the positions of k-points
-        kweights : ArrayLike, optional
-            Weight of individual k-points, must be as long as the number of k-points
-        kgrid : int, optional
-            Number of subdivisions to create a Monkhorst-Pack k-point mesh. See `kmesh`
-            for a more in-depth explanation. Overrides `kpoints` if specified.
-        kshift : ArrayLike, optional
-            Vector to translate k-points if k-grid is specified.
-        permute : ArrayLike, optional
-            Vector to permute the structure. See `Structure.permute()` for more information.
-        units : str, optional
-            Units of the positions. See `unit_converter.py` for a 
-            full list of supported units.
-        tiling : ArrayLike of int, optional
-            A vector of ints for tiling the cell in each dimension.
-            See `Structure.tile()` for more information.
-        rescale : bool, default=True
-            `True` will rescale the supplied structural information with the scaling
-            factor provided (see `scale`), `False` sets the `scale` without altering
-            the provided structural information.
-        dim : int, default=3
-            Dimensionality of the Structure. See Notes for more information.
-        operations : str or Iterable[str], optional
-            Operations to perform on the structure. See `Structure.set_operations()`
-            for more information.
-        background_charge : int, default=0
-            The total background charge of the system. Positive for cations,
-            negative for anions, and zero for neutral systems.
-        frozen : ArrayLike[bool], optional
-            Mask array of booleans with the same length as the number of atoms
-            and width of `dim`. See `Structure.set_frozen()` for more information
-        bconds : str or Iterable[str], optional
-            Boundary conditions either in all directions or specified for each
-            dimension. Defaults to periodic in all directions.
-        posu : ArrayLike or bool, optional
-            Either the positions of the atoms in units of the lattice parameter
-            or a boolean to indicate that `pos` is in units of the lattice parameter,
-            in which case this signals to convert them to realspace units.
-        use_prim : bool, optional
-            Option to convert the unit cell to a primitive cell.
-            Requires that the `seekpath` package is installed.
-        add_kpath : bool, default=False
-            Optionally add k-points to the primitive cell. Only
-            used if `use_prim` is ``True``.
-        symm_kgrid : bool, default=False
-            Option for generating a Monkhorst-Pack k-point grid with only
-            symmetric k-points. Requires `spglib` package. 
-            See `Structure.add_symmetrized_mesh` for more information.
-        """
 
         if isinstance(axes,str):
             axes = np.array(axes.split(),dtype=float)
@@ -1605,8 +1603,8 @@ class Structure(Sobj):
             Minimum acceptable distance from the cell edges to any atom in the
             molecule, potentially specified per-axis.
 
-        Note
-        ----
+        Notes
+        -----
         The default rmin_edge of 1e-8 is designed to just barely contain the 
         molecule. It is important to ensure that for larger, non-periodic 
         molecular systems or atoms that the unit cell size is sufficiently 
@@ -1678,8 +1676,8 @@ class Structure(Sobj):
             Vector used to generate a permutation matrix. See Note below
             for full description.
 
-        Note
-        ----
+        Notes
+        -----
         The supplied permutation vector can have one of two forms, one being
         a vector of coordinate axis names to permute into one another, or a
         vector of coordinate axis numbers to permute into one another.
@@ -2049,8 +2047,8 @@ class Structure(Sobj):
     def rescale(self,scale):
         """Scale the structure by a specified scaling factor
 
-        Note
-        ----
+        Notes
+        -----
         This function will scale by the same amount in all dimensions.
 
         This function scales the cell axes, the atom positions, the cell center,
@@ -2081,8 +2079,8 @@ class Structure(Sobj):
         s3 : float
             Scaling factor in the Z direction
 
-        Note
-        ----
+        Notes
+        -----
         See `Structure.matrix_transform()` for a list of all scaled quantities.
         """
         if self.dim!=3:
@@ -2103,29 +2101,31 @@ class Structure(Sobj):
             If a 3x3 matrix, then code executes rotation consistent with this matrix -- 
             it is assumed that the matrix acts on a column-major vector (eg, v'=Rv)
             If a three-dimensional array, then the operation of the function depends
-            on the input type of rp in the following ways:
-                1. If rp is a scalar, then rp is assumed to be an angle and a rotation 
-                   of rp is made about the axis defined by r
-                2. If rp is a vector, then rp is assumed to be an axis and a 
-                   rotation is made such that r aligns with rp
-                3. If rp is a str, then the rotation is such that r aligns with the
-                   axis given by the str ('x', 'y', 'z', 'a0', 'a1', or 'a2')
-            If a str then the axis, r, is defined by the input label
+            on the input type of ``rp`` in the following ways:
+
+            1. If ``rp`` is a scalar, then ``rp`` is assumed to be an angle and a rotation 
+               of ``rp`` is made about the axis defined by ``r``
+            2. If ``rp`` is a vector, then ``rp`` is assumed to be an axis and a 
+               rotation is made such that ``r`` aligns with ``rp``
+            3. If ``rp`` is a ``str``, then the rotation is such that ``r`` aligns with the
+               axis given by the str ``('x', 'y', 'z', 'a0', 'a1', or 'a2')``
+
+            If a ``str`` then the axis, ``r``, is defined by the input label
             (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3') and the operation of the
-            function depends on the input type of rp in the same ways as above
+            function depends on the input type of ``rp`` in the same ways as above
         rp : ArrayLike of float with shape (3) or str, optional
-            If a 3-dimensional vector is given, then rp is assumed to be an axis and a rotation is made
-            such that the axis r is aligned with rp.
-            If a str, then rp is assumed to be an angle and a rotation about the axis defined by r 
-            is made by an angle rp
-            If a str is given, then rp is assumed to be an axis defined by the given label
-            (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3') and a rotation is made such that the axis r 
-            is aligned with rp.
+            If a 3-dimensional vector is given, then ``rp`` is assumed to be an axis and a rotation is made
+            such that the axis ``r`` is aligned with ``rp``.
+            If a str, then ``rp`` is assumed to be an angle and a rotation about the axis defined by ``r`` 
+            is made by an angle ``rp``
+            If a str is given, then ``rp`` is assumed to be an axis defined by the given label
+            (e.g. 'x', 'y', 'z', 'a1', 'a2', or 'a3') and a rotation is made such that the axis ``r`` 
+            is aligned with ``rp``.
         passive : bool, default=False
             If `True`, perform a passive rotation
             If `False`, perform an active rotation
         units : str, default="radians"
-            Units of rp, if rp is given as an angle (scalar)
+            Units of ``rp``, if ``rp`` is given as an angle (scalar)
         check : bool, default=True
             Perform a check to verify rotation matrix is orthogonal
         """
@@ -2202,8 +2202,8 @@ class Structure(Sobj):
             A is in column-major form, i.e., it transforms a vector v as
             v' = Av
 
-        Note
-        ----
+        Notes
+        -----
         This will transform all physical dimensions of the structure, including
         the cell axes, the k-space axes, the positions of the atoms, the center
         of the cell, and if there is a folded structure it will transform that as
@@ -3879,8 +3879,8 @@ class Structure(Sobj):
         center : NDArray, default = self.center
             Position of the center of the cell.
         
-        Note
-        ----
+        Notes
+        -----
         If the user supplies `center`, then this will modify `self.center` to reflect
         that change.
         """
@@ -5267,8 +5267,8 @@ class Structure(Sobj):
         vm : float
             The Madelung constant for a given set of axes
 
-        Note
-        ----
+        Notes
+        -----
         See Equation 7 in https://doi.org/10.1103/PhysRevB.78.125106
         for a more in-depth description of the method.
         """
@@ -5345,8 +5345,8 @@ class Structure(Sobj):
         mp : float
             Makov-Payne correction for the system, in the specified `units`.
 
-        Note
-        ----
+        Notes
+        -----
         For a description of the method, see https://doi.org/10.1103/PhysRevB.51.4014
         """
         if order!=1:
@@ -5381,8 +5381,8 @@ class Structure(Sobj):
             Specify whether or not the parameter `filepath` is a path or the
             contents of the file.
 
-        Note
-        ----
+        Notes
+        -----
         The parameters `block`, `grammar`, and `cell` are all specific to the
         `Cif2Cell` package. If you are trying to read a CIF file pleasure ensure
         you have this installed.
@@ -5507,8 +5507,8 @@ class Structure(Sobj):
             This parameter can either be a file path that points to an XSF file
             or can be the literal contents of an XSF file.
 
-        Note
-        ----
+        Notes
+        -----
         This only reads in the geometric parameters from an XSF file,
         any meshes or datagrids are not stored.
         """
@@ -5659,8 +5659,8 @@ class Structure(Sobj):
     def read_cif(self,filepath,block=None,grammar='1.1',cell='prim') -> None:
         """Read in a CIF file and update the current `Structure` object.
 
-        Note
-        ----
+        Notes
+        -----
         This requires that the `Cif2Cell` package is installed!
         """
         axes,elem,pos,units = read_cif(filepath,block,grammar,cell,args_only=True)
@@ -5800,9 +5800,10 @@ class Structure(Sobj):
         -----
         This function will write the positions in the format
         (in this case using `with_elem=True`)
-        ```python
+        .. code-block:: python
+
             "{element:2} {dim1:12.8f} {dim2:12.8f} ... {dimN:12.8f}\\n"
-        ```
+
         """
         s = self.copy()
         s.change_units(units)
@@ -5839,8 +5840,8 @@ class Structure(Sobj):
         xyz : str
             The text that was or would have been written to the XYZ file.
 
-        Note
-        ----
+        Notes
+        -----
         To get a string of only the atomic positions, use `pos_to_str()` instead.
         """
         if self.dim!=3:
