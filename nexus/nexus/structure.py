@@ -217,7 +217,7 @@ except ImportError, ModuleNotFoundError:
 cif2cell_unit_dict = dict(angstrom='A',bohr='B',nm='nm')
 
 
-def read_cif_celldata(filepath: PathLike, block=None, grammar: str = '1.1'):
+def read_cif_celldata(filepath: PathLike, block: str | None = None, grammar: str = '1.1'):
     # read cif file with PyCifRW
     path,cif_file = os.path.split(filepath)
     if path!='':
