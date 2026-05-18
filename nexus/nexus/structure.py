@@ -3872,17 +3872,17 @@ class Structure(Sobj):
 
     # test needed
     def recorner(self, center = None):
-        """Center atoms around the origin of the cell
-        
+        """Center atoms around the origin of the cell.
+
         Parameters
         ----------
         center : NDArray, default = self.center
             Position of the center of the cell.
-        
+
         Notes
         -----
-        If the user supplies `center`, then this will modify `self.center` to reflect
-        that change.
+        If the user supplies ``center``, then this will modify
+        ``self.center`` to reflect that change.
         """
         if center is not None:
             self.center = np.array(center, dtype=float)
@@ -5799,7 +5799,7 @@ class Structure(Sobj):
         Notes
         -----
         This function will write the positions in the format
-        (in this case using `with_elem=True`)
+        (in this case using ``with_elem=True``)
         .. code-block:: python
 
             "{element:2} {dim1:12.8f} {dim2:12.8f} ... {dimN:12.8f}\\n"
@@ -5826,8 +5826,8 @@ class Structure(Sobj):
 
 
     def write_xyz(self, filepath=None):
-        """Write a `Structure` object to an XYZ file
-        
+        """Write a ``Structure`` object to an XYZ file
+
         Parameters
         ----------
         filepath : PathLike or None, default=None
@@ -5842,7 +5842,7 @@ class Structure(Sobj):
 
         Notes
         -----
-        To get a string of only the atomic positions, use `pos_to_str()` instead.
+        To get a string of only the atomic positions, use ``pos_to_str()`` instead.
         """
         if self.dim!=3:
             self.error('write_xyz is currently only implemented for 3 dimensions')
