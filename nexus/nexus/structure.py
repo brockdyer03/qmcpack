@@ -122,6 +122,7 @@ import numpy as np
 from copy import deepcopy
 from random import randint
 import itertools
+from typing import Self
 from numpy import (
     cos,
     cross,
@@ -6014,6 +6015,72 @@ class Structure(Sobj):
         #end if
     #end def rmg_transform
 
+
+    def equals(
+        self,
+        other: Self,
+        rtol: float = 1e-5,
+        atol: float = 1e-8,
+        ) -> bool:
+        """Check if this structure is equal to another within a tolerance.
+
+        This function checks all attributes of ``Structure`` that are
+        numeric with the given tolerances, and any non-numeric
+        attributes are checked for strict equality.
+
+        Some attributes, such as ``Structure.operations``, are not
+        checked for equality since these are not meant to be set by the
+        user and should not change.
+        """
+        equivalent = True
+        equivalent &= self.scale == other.scale
+        equivalent &= self.units == other.units
+        equivalent &= self.dim   == other.dim
+        equivalent &= np.array_equal(self.bconds, other.bconds)
+        equivalent &= np.array_equal(self.elem,   other.elem)
+        equivalent &= np.array_equal(self.frozen, other.frozen)
+        equivalent &= np.allclose(self.pos,      other.pos,      rtol=rtol, atol=atol)
+        equivalent &= np.allclose(self.axes,     other.axes,     rtol=rtol, atol=atol)
+        equivalent &= np.allclose(self.kaxes,    other.kaxes,    rtol=rtol, atol=atol)
+        equivalent &= np.allclose(self.center,   other.center,   rtol=rtol, atol=atol)
+        equivalent &= np.allclose(self.kpoints,  other.kpoints,  rtol=rtol, atol=atol)
+        equivalent &= np.allclose(self.kweights, other.kweights, rtol=rtol, atol=atol)
+        equivalent &= np.isclose(self.background_charge, other.background_charge, rtol=rtol, atol=atol)
+
+        if self.mag is other.mag: # None and None
+            equivalent &= True
+        else:
+            equivalent &= np.array_equal(self.mag, other.mag)
+
+        if hasattr(self, "tmatrix") and hasattr(other, "tmatrix"):
+            if self.tmatrix is other.tmatrix: # None and None
+                equivalent &= True
+            else:
+                equivalent &= np.allclose(self.tmatrix, other.tmatrix, rtol=rtol, atol=atol)
+
+        if hasattr(self, "Vmadelung") and hasattr(other, "Vmadelung"):
+            # float if it exists
+            equivalent &= np.isclose(self.Vmadelung, other.Vmadelung, rtol=rtol, atol=atol)
+
+        if hasattr(self, "point_defects") and hasattr(other, "point_defects"):
+            if len(self.point_defects) != len(other.point_defects):
+                equivalent &= False
+            else:
+                for s_defect, o_defect in zip(self.point_defects, other.point_defects):
+                    equivalent &= np.allclose(s_defect.center, o_defect.center, rtol=rtol, atol=atol)
+                    equivalent &= np.array_equal(s_defect.elem_replaced, o_defect.elem_replaced)
+                    equivalent &= np.array_equal(s_defect.elem, o_defect.elem)
+                    equivalent &= np.allclose(s_defect.pos, o_defect.pos, rtol=rtol, atol=atol)
+
+        s_has_folded = self.has_folded()
+        o_has_folded = other.has_folded()
+        if s_has_folded is not o_has_folded: # One has folded, the other doesn't
+            equivalent &= False
+        elif s_has_folded and o_has_folded:
+            equivalent &= self.folded_structure.equals(other.folded_structure, rtol=rtol, atol=atol)
+
+        return equivalent
+    #end def equals
 #end class Structure
 Structure.set_operations()
 

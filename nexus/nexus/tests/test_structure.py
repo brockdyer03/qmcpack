@@ -13,6 +13,7 @@ from ..testing import object_eq as object_eq_orig
 from ..testing import object_diff as object_diff_orig
 from ..testing import text_eq
 from .. import numpy_extensions as npe
+from ..structure import generate_structure
 
 
 struct_atol = 1e-10
@@ -1895,3 +1896,18 @@ def test_corners():
     ]
 
     np.testing.assert_allclose(structure.corners(), ref_corners)
+
+
+def test_equals():
+    pre_gen_structures = get_generated_structures()
+
+    fresh_gen_structures = dict()
+
+    ref_in = get_reference_inputs()
+    for name,inputs in ref_in.items():
+        fresh_gen_structures[name] = generate_structure(**inputs)
+
+    for pre_gen_key, pre_gen_structure in pre_gen_structures.items():
+        assert(structure_same(pre_gen_structure, fresh_gen_structures[pre_gen_key]))
+        # atol=0 is stricter than normal
+        assert(pre_gen_structure.equals(fresh_gen_structures[pre_gen_key], rtol=1e-8, atol=0))
