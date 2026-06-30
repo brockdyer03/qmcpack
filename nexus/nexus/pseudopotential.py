@@ -37,8 +37,10 @@
 #====================================================================#
 
 import os
+from os import PathLike
 from pathlib import Path
 import numpy as np
+import re
 from .execute import execute
 from .fileio import TextFile
 from .xmlreader import readxml
@@ -86,6 +88,88 @@ def pp_elem_label(filename,guard=False):
             return elem_label, element, is_elem
     #end if
 #end def pp_elem_label
+
+
+def read_upf_z_valence(file: PathLike) -> int | float:
+    """Read Z-valence from a UPF-compliant pseudopotential file.
+
+    Raises
+    ------
+    RuntimeError
+        On failure to parse.
+    """
+    zval = None
+    header_data = []
+    with open(file, "r") as pseudo:
+        found_header_start = False
+        while not found_header_start:
+            line = pseudo.readline()
+            if "<PP_HEADER" in line:
+                header_data.append(line)
+                found_header_start = True
+
+        if "/>" in line or "</PP_HEADER>" in line:
+            data = line.split('"')
+            for index, entry in enumerate(data):
+                if entry.strip() == "z_valence=":
+                    zval = float(data[index + 1])
+        else: # Go for brute-force search
+            for line in pseudo:
+                line = line.strip().casefold()
+                if "z_valence" in line and '"' in line:
+                    data = line.split('"')[-2]
+                    zval = float(data)
+                elif line.endswith("z valence"):
+                    zval = float(line.split()[0])
+                elif line.startswith("z valence"):
+                    zval = float(line.split()[-1])
+
+    if zval is None:
+        error(
+        f"Could not find Z valence in file: {file!s}\n"
+            "You may need to provide the Z valence manually!"
+            )
+    elif zval.is_integer():
+        return int(zval)
+    else:
+        return zval
+#end def read_upf_z_valence
+
+
+def read_xml_z_valence(file: PathLike) -> int | float:
+    """Read the Z-valence from a QMCPACK-compatible XML pseudopotential file."""
+    header_pattern = re.compile(r'zval=\"([\d\.]+)\"')
+
+    header_lines = []
+    with open(file, "r") as xml:
+        header_started = False
+        for line in xml:
+            if "<header" in line:
+                header_started = True
+
+            if header_started:
+                header_lines.append(line)
+
+            if "/>" in line or "</header>" in line:
+                header_lines.append(line)
+                break
+
+    header = " ".join(header_lines)
+    zval = re.search(header_pattern, header)
+
+    if zval is None:
+        error(
+           f"Could not find Z valence in file: {file!s}\n"
+            "You may need to provide the Z valence manually!"
+            )
+
+    zval = float(zval.groups()[0])
+
+    if zval.is_integer():
+        return int(zval)
+    else:
+        return zval
+#end def read_xml_z_valence
 
 
 # basic interface for nexus, only gamess really needs this for now
@@ -283,7 +367,15 @@ class PPset(DevBase):
         return code in PPset.known_codes
     #end def supports_code
 
-    def __call__(self,label,**code_pps):
+    def __call__(
+        self,
+        label: str,
+        pp_dir: PathLike | None            = None,
+        z_eff_dict: dict[str, int | float] = dict(),
+        read_zvals: bool                   = False,
+        **code_pps,
+        ):
+
         if not isinstance(label,str):
             self.error('incorrect use of ppset\nlabel provided must be a string\nreceived type instead: {0}\nwith value: {1}'.format(label.__class__.__name__,label))
         #end if
@@ -307,15 +399,29 @@ class PPset(DevBase):
                 else:
                     pp = path_string(pp)
                     elem_label, symbol, is_elem = pp_elem_label(pp)
+                    if read_zvals and pp not in z_eff_dict:
+                        match os.path.splitext(pp)[1]:
+                            case "upf":
+                                zval = read_upf_z_valence(pp)
+                            case "xml":
+                                zval = read_xml_z_valence(pp)
+                            case _:
+                                ext = os.path.splitext(pp)[1]
+                                self.warn(f"Unknown file extension {ext}, will not parse.")
 
+                        z_eff_dict[pp] = zval
                 if not is_elem:
                     self.error('invalid filename provided to ppset\ncannot determine element for pseudopotential file: {0}\npseudopotential file names must be prefixed by an atomic symbol or label\n(e.g. Si, Si1, etc)'.format(pp))
                 elif symbol in ppcoll:
                     self.error('incorrect use of ppset\nmore than one pseudopotential file provided for element "{0}" for code "{1}" in set labeled "{2}"\nfirst file: {3}\nsecond file: {4}'.format(symbol,code,label,ppcoll[symbol],pp))
                 #end if
+                if pp_dir is not None:
+                    pp = os.path.join(pp_dir, pp)
                 ppcoll[symbol] = path_string(pp)
             #end for
-            pseudos[clow] = ppcoll
+            pseudos[clow] = obj()
+            pseudos[clow]["ppcoll"] = ppcoll
+            pseudos[clow]["z_effs"] = z_eff_dict # Unused for now.
         #end for
     #end def __call__
 
@@ -346,7 +452,7 @@ class PPset(DevBase):
         elif clow not in pseudos:
             self.error('incorrect use of ppset\npseudopotentials were not provided for simulation code "{0}" in set labeled "{1}"\npseudopotentials are required for physical system with pseudo-elements: {2}\nplease add these pseudopotentials for code "{0}" in set "{1}"'.format(code,label,sorted(species)))
         #end if
-        ppcoll = pseudos[clow]
+        ppcoll = pseudos[clow]["ppcoll"]
         pps = []
         for symbol in species:
             if symbol not in ppcoll:
@@ -2028,10 +2134,8 @@ class GaussianPP(SemilocalPP):
 
     # test needed
     def simplify(self):
-        '''This function simplifies the Gaussian ECP.
-        
-        The simplificactions are as follows:
-
+        '''
+        This function simplifies the Guassian ECP. The simplificactions are as follows:
         1. Remove all terms with coefficients that are equal to zero -- unless only one term exists.
         2. Within each component, look for terms that have matching exponents and r-powers, if any are
            present, then sum their coefficicents to make a single term. If the coefficients sum to
