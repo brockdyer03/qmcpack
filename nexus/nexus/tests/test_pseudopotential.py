@@ -593,8 +593,6 @@ Atomic configuration
     potcar_proper_file = tmp_path / "POTCAR"
     potcar_proper_file.write_text(potcar_proper)
 
-    z_valence_float = read_potcar_z_valence(potcar_proper_file)
-
     z_valence = read_potcar_z_valence(potcar_proper_file)
 
     assert(isinstance(z_valence, int))
