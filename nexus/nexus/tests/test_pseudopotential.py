@@ -7,13 +7,13 @@ generic_settings.raise_error = True
 
 from . import isolate_nexus_core, TEST_DIR
 from ..testing import value_eq,object_eq
-from ..pseudopotential import read_upf_z_valence, read_xml_z_valence
+from ..pseudopotential import read_upf_z_valence, read_xml_z_valence, read_potcar_z_valence
 
 
 TEST_FILES = {
-    "C.BFD.gms"         : TEST_DIR / "test_pseudopotential_files/C.BFD.gms",
-    "C.BFD.upf"         : TEST_DIR / "../examples/qmcpack/pseudopotentials/C.BFD.upf",
-    "C.BFD.xml"         : TEST_DIR / "../examples/qmcpack/pseudopotentials/C.BFD.xml",
+    "C.BFD.gms": TEST_DIR / "test_pseudopotential_files/C.BFD.gms",
+    "C.BFD.upf": TEST_DIR / "../examples/qmcpack/pseudopotentials/C.BFD.upf",
+    "C.BFD.xml": TEST_DIR / "../examples/qmcpack/pseudopotentials/C.BFD.xml",
     }
 
 for file in TEST_FILES.values():
@@ -555,3 +555,108 @@ def test_read_xml_z_valence(tmp_path):
 
     assert(z_valence_float == 4.5)    
 #end def test_read_xml_z_valence
+
+
+def test_read_potcar_z_valence(tmp_path):
+    """POTCAR examples assembled from publicly available information [1]_.
+
+    First test is for a properly formatted POTCAR with an integer-value
+    Z-valence. Second test is for an improperly formatted POTCAR with an
+    integer-value Z-valence, to test the fallback method. Third test is
+    a properly formatted POTCAR with a non-integer-value Z-valence.
+
+    References
+    ----------
+    .. [1] https://vasp.at/wiki/POTCAR#File_format
+    """
+    potcar_proper = """
+PAW_PBE C 07Sep2000
+4.000
+TITEL = PAW_PBE C 07Sep2000
+LEXCH = PE
+POMASS = 47.880; ZVAL = 4.000 mass and valenz
+ENMAX = 222.335; ENMIN = 166.751 eV
+EAUG = 482.848
+Atomic configuration
+    8 entries
+     n  l   j            E        occ.
+     1  0  0.50     -4865.3608   2.0000
+     2  0  0.50      -533.1368   2.0000
+     2  1  1.50      -440.5031   6.0000
+     3  0  0.50       -59.3186   2.0000
+     3  1  1.50       -35.7012   6.0000
+     3  2  2.50        -1.9157   3.0000
+     4  0  0.50        -3.7291   1.0000
+     4  3  2.50        -1.3606   0.0000
+"""
+
+    potcar_proper_file = tmp_path / "POTCAR"
+    potcar_proper_file.write_text(potcar_proper)
+
+    z_valence_float = read_potcar_z_valence(potcar_proper_file)
+
+    z_valence = read_potcar_z_valence(potcar_proper_file)
+
+    assert(isinstance(z_valence, int))
+    assert(z_valence == 4)
+
+    # Modified version of POTCAR with incorrect 2nd line, to test the fallback system
+    potcar_improper = """
+PAW_PBE C 07Sep2000
+########NOT THE RIGHT LINE########
+TITEL = PAW_PBE C 07Sep2000
+LEXCH = PE
+POMASS = 47.880; ZVAL = 4.000 mass and valenz
+ENMAX = 222.335; ENMIN = 166.751 eV
+EAUG = 482.848
+Atomic configuration
+    8 entries
+     n  l   j            E        occ.
+     1  0  0.50     -4865.3608   2.0000
+     2  0  0.50      -533.1368   2.0000
+     2  1  1.50      -440.5031   6.0000
+     3  0  0.50       -59.3186   2.0000
+     3  1  1.50       -35.7012   6.0000
+     3  2  2.50        -1.9157   3.0000
+     4  0  0.50        -3.7291   1.0000
+     4  3  2.50        -1.3606   0.0000
+"""
+
+    potcar_improper_file = tmp_path / "POTCAR2"
+    potcar_improper_file.write_text(potcar_improper)
+
+    z_valence = read_potcar_z_valence(potcar_improper_file)
+
+    assert(isinstance(z_valence, int))
+    assert(z_valence == 4)
+
+    # Modified version of POTCAR with a non-integer Z-valence
+    potcar_float = """
+PAW_PBE C 07Sep2000
+4.500
+TITEL = PAW_PBE C 07Sep2000
+LEXCH = PE
+POMASS = 47.880; ZVAL = 4.500 mass and valenz
+ENMAX = 222.335; ENMIN = 166.751 eV
+EAUG = 482.848
+Atomic configuration
+    8 entries
+     n  l   j            E        occ.
+     1  0  0.50     -4865.3608   2.0000
+     2  0  0.50      -533.1368   2.0000
+     2  1  1.50      -440.5031   6.0000
+     3  0  0.50       -59.3186   2.0000
+     3  1  1.50       -35.7012   6.0000
+     3  2  2.50        -1.9157   3.0000
+     4  0  0.50        -3.7291   1.0000
+     4  3  2.50        -1.3606   0.0000
+"""
+
+    potcar_float_file = tmp_path / "POTCAR3"
+    potcar_float_file.write_text(potcar_float)
+
+    z_valence = read_potcar_z_valence(potcar_float_file)
+
+    assert(isinstance(z_valence, float))
+    assert(z_valence == 4.5)
+#end def test_read_potcar_z_valence

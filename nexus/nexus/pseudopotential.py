@@ -91,13 +91,7 @@ def pp_elem_label(filename,guard=False):
 
 
 def read_upf_z_valence(file: PathLike) -> int | float:
-    """Read Z-valence from a UPF-compliant pseudopotential file.
-
-    Raises
-    ------
-    RuntimeError
-        On failure to parse.
-    """
+    """Read Z-valence from a UPF-compliant pseudopotential file."""
     zval = None
     header_data = []
     with open(file, "r") as pseudo:
@@ -164,6 +158,43 @@ def read_xml_z_valence(file: PathLike) -> int | float:
             )
 
     zval = float(zval.groups()[0])
+
+    if zval.is_integer():
+        return int(zval)
+    else:
+        return zval
+#end def read_xml_z_valence
+
+
+def read_potcar_z_valence(file: PathLike) -> int | float:
+    """Read the Z-valence from a POTCAR file.
+
+    This function uses the format specifications from the VASP wiki, and
+    assumes that the file is a valid POTCAR, so the second line should
+    be the Z-valence [1]_.
+
+    References
+    ----------
+    .. [1] https://vasp.at/wiki/POTCAR#File_format
+    """
+    file = Path(file).resolve()
+    with open(file, "r") as potcar:
+        potcar.readline() # Skip first line
+        z_valence = potcar.readline().strip()
+        try:
+            zval = float(z_valence)
+        except ValueError: # Improperly formatted POTCAR, but try alternative location
+            for line in potcar:
+                if "ZVAL" in line:
+                    zval = re.search(r"ZVAL ?= ?([\d\.]+)", line)
+                    break
+
+            if zval is None:
+                raise ValueError(
+                    f"Can not find Z-valence in POTCAR file: {file!s}"
+                    )
+            else:
+                zval = float(zval.group(1))
 
     if zval.is_integer():
         return int(zval)
