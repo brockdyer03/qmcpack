@@ -7,6 +7,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
+from typing import TypeAlias
 from .developer import warn
 
 
@@ -578,3 +579,11 @@ class Elements(ElementData, Enum):
     Ts = Tennessine
     Og = Oganesson
 #end class Element
+
+
+ElementLike: TypeAlias = Elements | str | int
+"""Types that could be valid identifiers for an element.
+
+For example, an element's name or atomic symbol (``str``), or the
+element's atomic number (``int``), or a member of the ``Elements`` enum.
+"""

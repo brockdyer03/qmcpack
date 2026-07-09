@@ -32,14 +32,517 @@
 #                                                                    #
 #====================================================================#
 
+from __future__ import annotations
+from collections.abc import Mapping, Iterable
+from copy import deepcopy
 import os
 from pathlib import Path
-from copy import deepcopy
+from typing import TypeAlias, Literal
+
 import numpy as np
-from .developer import DevBase, obj
-from .unit_converter import convert
-from .periodic_table import Elements
+import numpy.typing as npt
+
+from .developer import obj, DevBase
+from .periodic_table import Elements, ElementLike
 from .structure import Structure, generate_structure, read_structure
+from .unit_converter import convert
+
+LabelNumMap: TypeAlias = Mapping[str, int | float | npt.NDArray[np.floating]]
+"""Mapping (e.g. ``dict`` or ``obj``) from an ion label to a number or array."""
+
+ElemNumMap: TypeAlias = Mapping[ElementLike, int | float | npt.NDArray[np.floating]]
+"""Mapping (e.g. ``dict`` or ``obj``) from an element to a number or array."""
+
+
+def _as_int_if_close(value: int | float, tol: float = 1e-8) -> int | float:
+    """Return an int if value is close to an integer within a given tolerance."""
+    if isinstance(value, int):
+        return value # Early exit
+    elif abs((int_value := round(value)) - value) < tol:
+        return int_value
+    else:
+        return value
+
+
+class Electrons:
+    """Class representing a collection of electrons
+
+    Note that this class does not make guarantees about having an
+    integer amount of electrons, but provides ``is_fractional`` to check
+    for non-integer numbers of electrons. If the class is created with
+    integer-value floats for ``count`` and ``spin``, they will be
+    converted into ints.
+
+    Attributes
+    ----------
+    count : int or float, property
+        The total number of electrons.
+    spin : int or float, property
+        The total spin of the system.
+
+        An up-spin electron has a spin of +1, a down-spin electron has
+        a spin of -1.
+    n_up : int or float, read-only property
+        The number of up-spin electrons.
+        Not defined for spin-orbit systems.
+    n_down : int or float, read-only property
+        The number of down-spin electrons.
+        Not defined for spin-orbit systems.
+    total_charge : int or float, read-only property
+        The total charge of the electrons, equal to
+        ``self.unit_charge * self.count``.
+    multiplicity : int or float, read-only property
+        The spin multiplicity of the electrons, equal to :math:`2S+1`
+        where :math:`S` is the spin.
+    """
+    
+    @property
+    def unit_charge(self) -> Literal[-1]:
+        return -1
+
+    @property
+    def unit_mass(self) -> float:
+        return 1.0
+
+    def __init__(
+        self,
+        count     : int | float,
+        n_unpaired: int | float,
+        spin_orbit: bool = False,
+        ):
+        self.count      = count
+        self.n_unpaired = n_unpaired
+        self.spin_orbit = spin_orbit
+
+    @property
+    def count(self) -> int | float:
+        return self._count
+
+    @count.setter
+    def count(self, new_count: int | float) -> None:
+        self._count = _as_int_if_close(new_count)
+
+    @property
+    def n_unpaired(self) -> int | float:
+        """The number of unpaired electrons.
+
+        This is essentially the number of up-spin electrons minus the
+        number of down-spin electrons.
+        """
+        return self._n_unpaired
+
+    @n_unpaired.setter
+    def n_unpaired(self, n_unpaired: int | float) -> None:
+        self._n_unpaired = _as_int_if_close(n_unpaired)
+
+    @property
+    def spin(self) -> int | float:
+        """Alias for ``self.n_unpaired``."""
+        return self.n_unpaired
+
+    @property
+    def quantum_spin(self) -> int | float:
+        """The spin quantum number of the electrons collection.
+
+        This uses the definition of spin where up-spin is +1/2 and
+        down-spin is -1/2.
+        """
+        return _as_int_if_close(self.n_unpaired / 2)
+
+    @quantum_spin.setter
+    def quantum_spin(self, new_spin: int | float) -> None:
+        self.n_unpaired = new_spin * 2 # Delegate setting to n_unpaired
+
+    def n_up_down(self) -> tuple[int, int] | tuple[float, float]:
+        """Return a tuple representing the number of up- and down-spin electrons.
+
+        Examples
+        --------
+        >>> Electrons(count=16, n_unpaired=2).n_up_down()
+        (9, 7) # (up, down)
+        >>> Electrons(count=15, n_unpaired=2).n_up_down()
+        (8.5, 6.5)
+        >>> Electrons(count=16, n_unpaired=1).n_up_down()
+        (8.5, 7.5)
+        >>> Electrons(count=15, n_unpaired=1).n_up_down()
+        (8, 7)
+        >>> Electrons(count=15, n_unpaired=-1).n_up_down()
+        (7, 8)
+        """
+        if self.spin_orbit:
+            # Use type(self).__name__ to get name of subclass, not base class
+            raise RuntimeError(
+                f"{type(self).__name__} can not be split into up- and down-spin with a spin-orbit system!"
+                )
+
+        n_up   = _as_int_if_close((self.count + self.spin) / 2)
+        n_down = _as_int_if_close((self.count - self.spin) / 2)
+
+        return n_up, n_down
+
+    @property
+    def n_up(self) -> int | float:
+        if self.spin_orbit:
+            raise RuntimeError(
+                f"Up-spin {type(self).__name__} are not defined with a spin-orbit system!"
+                )
+        return self.n_up_down()[0]
+
+    @property
+    def n_down(self) -> int | float:
+        if self.spin_orbit:
+            raise RuntimeError(
+                f"Down-spin {type(self).__name__} are not defined with a spin-orbit system!"
+                )
+        return self.n_up_down()[1]
+
+    def is_fractional(self) -> bool:
+        """Returns ``True`` if the count of electrons is not an ``int``."""
+        return isinstance(self.count, float)
+
+    @property
+    def total_charge(self) -> int | float:
+        return self.unit_charge * self.count
+
+    @property
+    def multiplicity(self) -> int | float:
+        """Defined as :math:`2S+1` where :math:`S` is ``self.spin``.
+
+        Undefined for spin-orbit systems and fractional counts.
+        """
+        if self.spin_orbit:
+            raise RuntimeError("Multiplicity is undefined for spin-orbit systems!")
+        elif self.is_fractional():
+            raise RuntimeError("Multiplicity is undefined for fractional counts!")
+        else:
+            return abs(self.n_unpaired) + 1
+
+    @classmethod
+    def neutralize_to(
+        cls,
+        ions      : Iterable[IonSpecies],
+        net_charge: int | float,
+        n_unpaired: int | float | None = None,
+        spin_orbit: bool = False,
+    ) -> Electrons:
+        """Neutralize the charge of ``ions`` to ``net_charge``.
+
+        This will prioritize creating an integer number of electrons
+        with the specified spin, however it will fall back to a
+        fractional number of electrons if necessary.
+
+        Parameters
+        ----------
+        ions : Iterable of IonSpecies
+            A ``dict`` or ``obj`` with ``IonSpecies`` as values or a
+            list of ``IonSpecies``.
+        net_charge : int or float
+            The desired net charge of the combined ion-electron system.
+        n_unpaired : int or float, optional
+            The desired total number of unpaired electrons. If this is
+            not specified, then this function sets it to zero for an
+            even number of electrons and one for an odd number. If the
+            number of electrons is not an integer, then it sets it such
+            that the number of down-spin electrons is an integer and the
+            number of up-spin electrons is a float.
+        spin_orbit : bool, default=False
+            Specify whether or not the system is a spin-orbit system.
+            Passed to the class constructor.
+        """
+        if isinstance(ions, Mapping):
+            ions = ions.values()
+
+        ions_charge = 0
+        for ion in ions:
+            ions_charge += ion.total_charge_deficit
+
+        n_electrons = _as_int_if_close(ions_charge - net_charge)
+        if n_unpaired is None:
+            n_unpaired = _as_int_if_close(n_electrons % 2)
+
+        return Electrons(
+            count      = n_electrons,
+            n_unpaired = n_unpaired,
+            spin_orbit = spin_orbit,
+            )
+
+    def __eq__(self, other) -> bool:
+        return (
+            self.unit_charge    == other.unit_charge
+            and self.count      == other.count
+            and self.n_unpaired == other.n_unpaired
+            and self.spin_orbit is other.spin_orbit
+            )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"count={self.count}, "
+            f"n_unpaired={self.n_unpaired}, "
+            f"spin_orbit={self.spin_orbit})"
+            )
+#end class Electrons
+
+
+class IonSpecies:
+    """Class representing a collection of ions of the same type.
+
+    Attributes
+    ----------
+    element : Elements
+        The element for this ion collection.
+    count : int or float
+        The number of ions in this collection.
+    label : str
+        The label for the ion collection.
+    formal_charge : int or float
+        The formal charge associated with a single one of the ions.
+    magnetization : int or float or NDArray
+        The magnetization of a single one of the ions.
+    Zeff : int or float
+        The effective nuclear charge of one of the ions.
+    symbol : str, read-only property
+        The atomic symbol of the element.
+    total_formal_charge : int or float, read-only property
+        Formal charge multiplied by count.
+    total_nuclear_charge : int or float, read-only property
+        Zeff multiplied by count.
+    electron_deficit : int or float, read-only property
+        Number of electrons required to reach the formal charge.
+    total_electron_deficit : int or float, read-only property
+        Number of electrons required to reach the formal charge
+        multiplied by count.
+    total_magnetization : int or float or NDArray, read-only property
+        Magnetization multiplied by count.
+    total_mass : float, read-only property
+        Atomic weight multiplied by count.
+
+    Parameters
+    ----------
+    element : ElementLike
+        A member of the ``Elements`` enum, atomic symbol, or atomic
+        number.
+    count : int or float
+        The number of ions in this collection.
+    label : str, optional
+        The label for the ion. If not given, defaults to
+        ``element.symbol``.
+    formal_charge : int or float, default=0
+        The formal charge associated with a single one of the ions.
+    magnetization : int or float or ArrayLike, default=0
+        The magnetization of a single one of the ions.
+    Zeff : int, optional
+        The effective nuclear charge of the ion. Defaults to the atomic
+        number (a.k.a. all-electron).
+    """
+
+    def __init__(
+        self,
+        element      : ElementLike,
+        count        : int | float,
+        label        : str | None                  = None,
+        formal_charge: int | float                 = 0,
+        magnetization: int | float | npt.ArrayLike = 0,
+        Zeff         : int | float | None          = None,
+        ):
+        self.element       = Elements(element)
+        self.count         = _as_int_if_close(count)
+        self.label         = label if label is not None else self.element.symbol
+        self.formal_charge = _as_int_if_close(formal_charge)
+        self.Zeff          = _as_int_if_close(Zeff) if Zeff is not None else self.element.atomic_number
+
+        if isinstance(magnetization, int | float):
+            self.magnetization = magnetization
+        elif isinstance(magnetization, list | tuple | np.ndarray):
+            self.magnetization = np.asarray(magnetization, dtype=np.float64)
+
+    def pseudized(self) -> bool:
+        """Check if this ion is pseudized."""
+        return self.Zeff != self.element.atomic_number
+
+    def pseudize(self, Zeff: int):
+        """Equivalent to setting ``self.Zeff = Zeff``."""
+        self.Zeff = Zeff
+
+    def is_ghost(self) -> bool:
+        """Check if this collection of ions represents ghost atoms."""
+        return self.element is Elements.Unknown
+
+    @property
+    def symbol(self) -> str:
+        """Atomic symbol of the element."""
+        return self.element.symbol
+
+    @property
+    def total_mass(self) -> float:
+        """Total mass of all ions in the collection."""
+        return self.element.atomic_weight * self.count
+
+    @property
+    def charge_deficit(self) -> int | float:
+        """The required number of electrons to get to the formal charge.
+
+        Equal to the effective nuclear charge minus the formal charge.
+
+        For example, a single all-electron oxygen (``Zeff=8``) that has 
+        ``formal_charge=-1`` needs :math:`8 - (-1) = 8 + 1 = 9`
+        electrons to achieve the desired format charge.
+        """
+        return self.Zeff - self.formal_charge
+
+    @property
+    def total_nuclear_charge(self) -> int | float:
+        """Nuclear charge times count."""
+        return self.Zeff * self.count
+
+    @property
+    def total_formal_charge(self) -> int | float:
+        """Unit charge times count."""
+        return self.formal_charge * self.count
+
+    @property
+    def total_charge_deficit(self) -> int | float:
+        """Number of electrons to achieve the desired formal charge times count."""
+        return self.charge_deficit * self.count
+
+    @property
+    def total_magnetization(self) -> int | float | npt.NDArray[np.floating]:
+        """Total magnetization of all ions in the collection."""
+        return self.magnetization * self.count
+
+    def __eq__(self, other) -> bool:
+        # Use np.all to handle cases where magnetization is an array
+        return bool(np.all(
+            self.element is other.element
+            and self.count         == other.count
+            and self.label         == other.label
+            and self.formal_charge == other.formal_charge
+            and self.magnetization == other.magnetization
+            and self.Zeff          == other.Zeff
+            ))
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"element={self.element}, "
+            f"count={self.count}, "
+            f"label={self.label}, "
+            f"formal_charge={self.formal_charge}, "
+            f"magnetization={self.magnetization}, "
+            f"Zeff={self.Zeff})"
+            )
+
+    def __hash__(self) -> int: # Enables making unordered sets or using as dict keys
+        return hash((
+            self.element,
+            self.count,
+            self.label,
+            self.formal_charge,
+            self.magnetization,
+            self.Zeff,
+            ))
+
+    @classmethod
+    def from_structure(
+        cls,
+        structure  : Structure,
+        elem_charge: LabelNumMap = dict(),
+        elem_mag   : LabelNumMap = dict(),
+        elem_Zeff  : LabelNumMap = dict(),
+        ) -> dict[str, IonSpecies]:
+        """Create a dict with ``IonSpecies`` from a ``Structure`` object.
+
+        It is important to note that this class only represents the ions
+        in a structure, not any other particles (e.g. electrons). Thus,
+        this will not capture the background charge of the structure if
+        it is defined.
+
+        Parameters
+        ----------
+        structure : Structure
+            The structure from which to pull ions.
+        elem_charge : Mapping[str, int or float], optional
+            A dict or ``obj`` mapping the elements to formal charges.
+            Defaults to 0 if not given.
+        elem_mag : Mapping[str, int or float], optional
+            A dict or ``obj`` mapping the elements to magnetizations.
+            Defaults to 0 if not given.
+        elem_Zeff : Mapping[str, int or float], optional
+            A dict or ``obj`` mapping the elements to effective nuclear
+            charges.
+            Defaults to the atomic number if not supplied.
+
+        Returns
+        -------
+        ions : dict[str, IonSpecies]
+            A dictionary of the ion species found in the structure.
+            The ion labels are used for the keys, sorted in alphabetical
+            order.
+
+        Examples
+        --------
+        Minimal call signature, populated with defaults.
+
+        >>> structure = Structure(
+        ...     elem = ["N", "C1", "C2", "O", "O", "H", "H", "H", "H", "H"],
+        ...     pos = np.zeros((10,3)),
+        ...     )
+        >>> ions = IonSpecies.from_structure(
+        ...     structure=structure,
+        ...     )
+        >>> for label, ion in ions.items():
+        ...     print(f"{label:2}: {repr(ion)}")
+        C1: IonSpecies(element=C, count=1, label=C1, formal_charge=0, magnetization=0, Zeff=6)
+        C2: IonSpecies(element=C, count=1, label=C2, formal_charge=0, magnetization=0, Zeff=6)
+         H: IonSpecies(element=H, count=5, label=H, formal_charge=0, magnetization=0, Zeff=1)
+         N: IonSpecies(element=N, count=1, label=N, formal_charge=0, magnetization=0, Zeff=7)
+         O: IonSpecies(element=O, count=2, label=O, formal_charge=0, magnetization=0, Zeff=8)
+
+        Full call signature, all values specified.
+
+        >>> structure = Structure(
+        ...     elem = ["N", "C1", "C2", "O", "O", "H", "H", "H", "H", "H"],
+        ...     pos = np.zeros((10,3)),
+        ...     )
+        >>> ions = IonSpecies.from_structure(
+        ...     structure   = structure,
+        ...     elem_charge = dict(N=3, C1=2, C2=4,   O=2, H=1  ),
+        ...     elem_mag    = dict(N=1, C1=0, C2=0.5, O=0, H=0.5),
+        ...     elem_Zeff   = dict(N=5, C1=4, C2=6,   O=6, H=1  ),
+        ...     )
+        >>> for label, ion in ions.items():
+        ...     print(f"{label:2}: {repr(ion)}")
+        C1: IonSpecies(element=C, count=1, label=C1, formal_charge=2, magnetization=0, Zeff=4)
+        C2: IonSpecies(element=C, count=1, label=C2, formal_charge=4, magnetization=0.5, Zeff=6)
+         H: IonSpecies(element=H, count=5, label=H, formal_charge=1, magnetization=0.5, Zeff=1)
+         N: IonSpecies(element=N, count=1, label=N, formal_charge=3, magnetization=1, Zeff=5)
+         O: IonSpecies(element=O, count=2, label=O, formal_charge=2, magnetization=0, Zeff=6)
+        """
+        ions = {}
+        elem_list = list(structure.elem)
+        elem_set = set(elem_list)
+        for label in elem_set:
+            is_elem, element = Elements.is_element(label, return_element=True)
+            if not is_elem:
+                raise ValueError(
+                    f"Can not determine element from label {label}!"
+                    )
+
+            ion = cls(
+                element       = element,
+                count         = elem_list.count(label),
+                label         = label,
+                formal_charge = elem_charge.get(label, 0),
+                magnetization = elem_mag.get(label, 0),
+                Zeff          = elem_Zeff.get(label, element.atomic_number),
+                )
+            ions[label] = ion
+        # Sort so keys (ion labels) are in alphabetical order.
+        # This is ever so slightly better than the random order
+        # that comes from using set(elem_list) above.
+        ions = {lbl: ions[lbl] for lbl in sorted(ions.keys())}
+        return ions
+#end class IonSpecies
 
 
 class Matter(DevBase):

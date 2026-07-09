@@ -8,9 +8,10 @@ generic_settings.raise_error = True
 import numpy as np
 from .. import testing
 from ..testing import value_eq,object_eq
-from nexus.physical_system import generate_physical_system
+from nexus.physical_system import generate_physical_system, Electrons, IonSpecies
 from nexus.periodic_table import Elements
 from nexus.unit_converter import convert
+from nexus.structure import Structure
 
 from .test_structure import structure_same
 
@@ -546,3 +547,337 @@ def test_particle_equiv():
         assert(value_eq(ions[ion].mass, convert(element.atomic_weight, "amu", "me")))
 
 #end def test_particle_equiv
+
+
+def test_electrons():
+    ref_charge       = -16
+    ref_multiplicity = 3
+    ref_n_up         = 9
+    ref_n_down       = 7
+
+    electrons = Electrons(count=16, n_unpaired=2, spin_orbit=False)
+
+    assert(electrons.total_charge    == ref_charge)
+    assert(electrons.multiplicity    == ref_multiplicity)
+    assert(electrons.n_up            == ref_n_up)
+    assert(electrons.n_down          == ref_n_down)
+    assert(not electrons.is_fractional())
+
+    ref_charge       = -15
+    ref_multiplicity = 3
+    ref_n_up         = 8.5
+    ref_n_down       = 6.5
+
+    electrons = Electrons(count=15, n_unpaired=2, spin_orbit=False)
+
+    assert(electrons.total_charge == ref_charge)
+    assert(not electrons.is_fractional())
+    assert(electrons.multiplicity == ref_multiplicity)
+    assert(electrons.n_up         == ref_n_up)
+    assert(electrons.n_down       == ref_n_down)
+
+    ref_charge       = -16
+    ref_multiplicity = 2
+    ref_n_up         = 8.5
+    ref_n_down       = 7.5
+
+    electrons = Electrons(count=16, n_unpaired=1, spin_orbit=False)
+
+    assert(electrons.total_charge == ref_charge)
+    assert(not electrons.is_fractional())
+    assert(electrons.multiplicity == ref_multiplicity)
+    assert(electrons.n_up         == ref_n_up)
+    assert(electrons.n_down       == ref_n_down)
+
+    ref_charge       = -15
+    ref_multiplicity = 2
+    ref_n_up         = 8
+    ref_n_down       = 7
+
+    electrons = Electrons(count=15, n_unpaired=1, spin_orbit=False)
+
+    assert(electrons.total_charge == ref_charge)
+    assert(not electrons.is_fractional())
+    assert(electrons.multiplicity == ref_multiplicity)
+    assert(electrons.n_up         == ref_n_up)
+    assert(electrons.n_down       == ref_n_down)
+
+    ref_charge       = -15
+    ref_multiplicity = 2
+    ref_n_up         = 7
+    ref_n_down       = 8
+
+    electrons = Electrons(count=15, n_unpaired=-1, spin_orbit=False)
+
+    assert(electrons.total_charge == ref_charge)
+    assert(not electrons.is_fractional())
+    assert(electrons.multiplicity == ref_multiplicity)
+    assert(electrons.n_up         == ref_n_up)
+    assert(electrons.n_down       == ref_n_down)
+#end def test_electrons
+
+
+def test_electrons_eq():
+    ref_charge       = -16
+    ref_multiplicity = 3
+    ref_n_up         = 9
+    ref_n_down       = 7
+
+    electrons1 = Electrons(count=16, n_unpaired=2, spin_orbit=False)
+
+    assert(electrons1.total_charge == ref_charge)
+    assert(electrons1.multiplicity == ref_multiplicity)
+    assert(electrons1.n_up         == ref_n_up)
+    assert(electrons1.n_down       == ref_n_down)
+    assert(not electrons1.is_fractional())
+
+    electrons2 = Electrons(count=16, n_unpaired=2, spin_orbit=False)
+
+    assert(electrons2.total_charge == ref_charge)
+    assert(electrons2.multiplicity == ref_multiplicity)
+    assert(electrons2.n_up         == ref_n_up)
+    assert(electrons2.n_down       == ref_n_down)
+    assert(not electrons2.is_fractional())
+
+    assert(electrons1 == electrons2)
+#end def test_electrons_eq
+
+
+def test_electrons_repr():
+    ref_repr = "Electrons(count=16, n_unpaired=2, spin_orbit=False)"
+    electrons = Electrons(count=16, n_unpaired=2, spin_orbit=False)
+    assert(repr(electrons) == ref_repr)
+#end def test_electrons_repr
+
+
+def test_custom_ion_species():
+    ion = IonSpecies(
+        element       = Elements.Iron,
+        count         = 12,
+        label         = "Fe1",
+        formal_charge = 2,
+        magnetization = 1,
+        Zeff          = 16,
+        )
+
+    assert(ion.element              is Elements.Iron)
+    assert(ion.count                == 12)
+    assert(ion.label                == "Fe1")
+    assert(ion.formal_charge        == 2)
+    assert(ion.magnetization        == 1)
+    assert(ion.Zeff                 == 16)
+    assert(ion.pseudized()          is True)
+    assert(ion.is_ghost()           is False)
+    assert(ion.symbol               == "Fe")
+    assert(ion.total_mass           == 670.14)
+    assert(ion.total_magnetization  == 12)
+    assert(ion.total_charge_deficit == 168)
+#end def test_custom_ion_species
+
+
+def test_minimal_ion_species():
+    """Test to make sure the defaults are populated correctly."""
+    ion = IonSpecies(element="Fe", count=12)
+
+    assert(ion.element              is Elements.Iron)
+    assert(ion.label                == "Fe")
+    assert(ion.count                == 12)
+    assert(ion.formal_charge        == 0)
+    assert(ion.magnetization        == 0)
+    assert(ion.Zeff                 == Elements.Iron.atomic_number)
+    assert(ion.pseudized()          is False)
+    assert(ion.is_ghost()           is False)
+    assert(ion.symbol               == Elements.Iron.symbol)
+    assert(ion.total_mass           == 670.14)
+    assert(ion.total_magnetization  == 0)
+    assert(ion.total_charge_deficit == 312)
+#end def test_minimal_ion_species
+
+
+def test_ion_species_eq():
+    ref_element               = Elements.Iron
+    ref_label                 = "Fe1"
+    ref_count                 = 12
+    ref_formal_charge         = 0
+    ref_magnetization         = 0
+    ref_Zeff                  = Elements.Iron.atomic_number
+    ref_is_pseudo             = False
+    ref_is_ghost              = False
+    ref_symbol                = Elements.Iron.symbol
+    ref_total_mass            = 670.14
+    ref_total_charge_deficit  = 312
+    ref_total_spin            = 0
+
+    ion1 = IonSpecies(element="Fe", label="Fe1", count=12)
+
+    assert(ion1.element               is ref_element)
+    assert(ion1.label                 == ref_label)
+    assert(ion1.count                 == ref_count)
+    assert(ion1.formal_charge         == ref_formal_charge)
+    assert(ion1.magnetization         == ref_magnetization)
+    assert(ion1.Zeff                  == ref_Zeff)
+    assert(ion1.pseudized()           is ref_is_pseudo)
+    assert(ion1.is_ghost()            is ref_is_ghost)
+    assert(ion1.symbol                == ref_symbol)
+    assert(ion1.total_mass            == ref_total_mass)
+    assert(ion1.total_charge_deficit  == ref_total_charge_deficit)
+    assert(ion1.total_magnetization   == ref_total_spin)
+
+    ion2 = IonSpecies(element=Elements.Iron, label="Fe1", count=12)
+
+    assert(ion2.element               is ref_element)
+    assert(ion2.label                 == ref_label)
+    assert(ion2.count                 == ref_count)
+    assert(ion2.formal_charge         == ref_formal_charge)
+    assert(ion2.magnetization         == ref_magnetization)
+    assert(ion2.Zeff                  == ref_Zeff)
+    assert(ion2.pseudized()           is ref_is_pseudo)
+    assert(ion2.is_ghost()            is ref_is_ghost)
+    assert(ion2.symbol                == ref_symbol)
+    assert(ion2.total_mass            == ref_total_mass)
+    assert(ion2.total_charge_deficit  == ref_total_charge_deficit)
+    assert(ion2.total_magnetization   == ref_total_spin)
+
+    assert(ion1 == ion2)
+#end def test_ion_species_eq
+
+
+def test_ion_species_repr():
+    ref_repr = "IonSpecies(element=Fe, count=12, label=Fe, formal_charge=0, magnetization=0, Zeff=26)"
+    ion = IonSpecies(element="Fe", count=12)
+    assert(repr(ion) == ref_repr)
+#end def test_ion_species_repr
+
+
+def test_ion_species_hash():
+    ion1 = IonSpecies(
+        element       = Elements.Carbon,
+        count         = 1,
+        label         = "C2",
+        formal_charge = 0,
+        magnetization     = 0,
+        Zeff          = 6,
+        )
+    ion2 = IonSpecies(
+        element       = "C", # Use a slightly different element specifier to make sure it resolves.
+        count         = 1,
+        label         = "C2",
+        formal_charge = 0,
+        magnetization     = 0,
+        Zeff          = 6,
+        )
+    assert(ion1 == ion2) # Make sure they're actually equal.
+    assert(hash(ion1) == hash(ion2))
+#end def test_ion_species_hash
+
+
+def test_ion_species_from_structure():
+    ref_ions = {
+        "C1": IonSpecies(element=Elements.Carbon,   count=1, label="C1", formal_charge=0, magnetization=0, Zeff=6),
+        "C2": IonSpecies(element=Elements.Carbon,   count=1, label="C2", formal_charge=0, magnetization=0, Zeff=6),
+        "H" : IonSpecies(element=Elements.Hydrogen, count=5, label="H",  formal_charge=0, magnetization=0, Zeff=1),
+        "N" : IonSpecies(element=Elements.Nitrogen, count=1, label="N",  formal_charge=0, magnetization=0, Zeff=7),
+        "O" : IonSpecies(element=Elements.Oxygen,   count=2, label="O",  formal_charge=0, magnetization=0, Zeff=8),
+        }
+
+    structure = Structure(
+        elem = ["N", "C1", "C2", "O", "O", "H", "H", "H", "H", "H"],
+        pos = np.zeros((10,3)),
+        )
+    ions = IonSpecies.from_structure(
+        structure=structure,
+        )
+
+    assert(ions == ref_ions)
+
+    ref_ions = {
+        "C1": IonSpecies(element=Elements.Carbon,   count=1, label="C1", formal_charge=0, magnetization=0,   Zeff=4),
+        "C2": IonSpecies(element=Elements.Carbon,   count=1, label="C2", formal_charge=0, magnetization=0.5, Zeff=6),
+        "H" : IonSpecies(element=Elements.Hydrogen, count=5, label="H",  formal_charge=0, magnetization=0.5, Zeff=1),
+        "N" : IonSpecies(element=Elements.Nitrogen, count=1, label="N",  formal_charge=0, magnetization=1,   Zeff=5),
+        "O" : IonSpecies(element=Elements.Oxygen,   count=2, label="O",  formal_charge=0, magnetization=0,   Zeff=6),
+        }
+
+    structure = Structure(
+        elem = ["N", "C1", "C2", "O", "O", "H", "H", "H", "H", "H"],
+        pos = np.zeros((10,3)),
+        )
+    ions = IonSpecies.from_structure(
+        structure   = structure,
+        elem_charge = dict(N=0, C1=0, C2=0,   O=0, H=0),
+        elem_mag    = dict(N=1, C1=0, C2=0.5, O=0, H=0.5),
+        elem_Zeff   = dict(N=5, C1=4, C2=6,   O=6, H=1),
+        )
+
+    assert(ions == ref_ions)
+#end def test_ion_species_from_structure
+
+
+def test_electrons_neutralize_to():
+    ions = {
+        "C1": IonSpecies(element=Elements.Carbon,   count=1, label="C1", formal_charge=0, magnetization=0,   Zeff=4),
+        "C2": IonSpecies(element=Elements.Carbon,   count=1, label="C2", formal_charge=0, magnetization=0.5, Zeff=6),
+        "H" : IonSpecies(element=Elements.Hydrogen, count=5, label="H",  formal_charge=0, magnetization=0.5, Zeff=1),
+        "N" : IonSpecies(element=Elements.Nitrogen, count=1, label="N",  formal_charge=0, magnetization=1,   Zeff=5),
+        "O" : IonSpecies(element=Elements.Oxygen,   count=2, label="O",  formal_charge=0, magnetization=0,   Zeff=6),
+        }
+
+    ref_electrons = Electrons(count=32, n_unpaired=0, spin_orbit=False)
+
+    electrons = Electrons.neutralize_to(
+        ions       = ions,
+        net_charge = 0,
+        n_unpaired = 0,
+        spin_orbit = False,
+        )
+    assert(electrons == ref_electrons)
+    assert(electrons.n_up   == 16)
+    assert(electrons.n_down == 16)
+    assert(isinstance(electrons.count, int))
+    assert(isinstance(electrons.spin,  int))
+
+    ref_electrons = Electrons(count=31, n_unpaired=1, spin_orbit=False)
+
+    electrons = Electrons.neutralize_to(
+        ions       = ions,
+        net_charge = 1,
+        n_unpaired = 1,
+        spin_orbit = False,
+        )
+    assert(electrons == ref_electrons)
+    assert(electrons.n_up   == 16)
+    assert(electrons.n_down == 15)
+    assert(isinstance(electrons.count, int))
+    assert(isinstance(electrons.spin,  int))
+
+    # Test with integer-value floats for count and spin.
+    # Should be turned into ints.
+    ref_electrons = Electrons(count=32, n_unpaired=2, spin_orbit=False)
+
+    electrons = Electrons.neutralize_to(
+        ions       = ions,
+        net_charge = 0.0,
+        n_unpaired = 2.0,
+        spin_orbit = False,
+        )
+    assert(electrons == ref_electrons)
+    assert(electrons.n_up   == 17)
+    assert(electrons.n_down == 15)
+    assert(isinstance(electrons.count, int))
+    assert(isinstance(electrons.spin,  int))
+
+    # See if it can make the right spin with floats
+    ref_electrons = Electrons(count=31.5, n_unpaired=1.5, spin_orbit=False)
+
+    electrons = Electrons.neutralize_to(
+        ions       = ions,
+        net_charge = 0.5,
+        n_unpaired = None,
+        spin_orbit = False,
+        )
+    assert(electrons == ref_electrons)
+    assert(electrons.n_up   == 16.5)
+    assert(electrons.n_down == 15)
+    assert(isinstance(electrons.count, float))
+    assert(isinstance(electrons.spin,  float))
+#end def test_electrons_neutralize_to
