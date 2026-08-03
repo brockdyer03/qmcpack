@@ -948,23 +948,13 @@ class Structure(Sobj):
     .. [1] https://spglib.readthedocs.io/en/stable/
     """
 
-    operations = obj()
-
-    @classmethod
-    def set_operations(cls):
-        cls.operations.update(
-            remove_folded_structure = cls.remove_folded_structure,
-            recenter = cls.recenter,
-            )
-    #end def set_operations
-
-
     def __init__(self,
+                 *,
                  axes              = None,
-                 scale             = 1.,
                  elem              = None,
                  pos               = None,
                  elem_pos          = None,
+                 posu              = None,
                  mag               = None,
                  center            = None,
                  kpoints           = None,
@@ -973,105 +963,123 @@ class Structure(Sobj):
                  kshift            = None,
                  permute           = None,
                  units             = None,
-                 tiling            = None,
-                 rescale           = True,
                  dim               = 3,
-                 operations        = None,
+                 tiling            = None,
+                 scale             = 1,
                  background_charge = 0,
                  frozen            = None,
-                 bconds            = None,
-                 posu              = None,
+                 bconds            = ("p", "p", "p"),
                  use_prim          = None,
                  add_kpath         = False,
                  symm_kgrid        = False,
                  ):
 
-        if isinstance(axes,str):
-            axes = np.array(axes.split(),dtype=float)
-            npe.reshape_inplace(axes, (dim, dim))
-        #end if
+        if pos is not None and elem_pos is not None:
+            msg = "Can not supply both `pos` and `elem_pos`!"
+            raise ValueError(msg)
+        elif pos is not None and posu is not None:
+            msg = "Can not supply both `pos` and `posu`!"
+            raise ValueError(msg)
+        elif posu is not None and elem_pos is not None:
+            msg = "Can not supply both `posu` and `elem_pos`!"
+            raise ValueError(msg)
+        elif elem is not None and elem_pos is not None:
+            msg = "Can not supply both `elem` and `elem_pos`!"
+            raise ValueError(msg)
+
+        if axes is None:
+            axes = None
+        elif isinstance(axes, str):
+            axes = np.asarray(axes.split(), dtype=float)
+            if axes.shape == (4,):
+                axes = axes.reshape((2, 2))
+            elif axes.shape == (9,):
+                axes = axes.reshape((3, 3))
+        else:
+            axes = np.asarray(axes, dtype=float)
+
+        self.axes = axes
+
         if center is None:
             if axes is not None:
-                center = np.array(axes,dtype=float).sum(0)/2
+                center = self.axes.sum(0)/2
             else:
-                center = dim*[0]
-            #end if
-        #end if
-        if bconds is None or bconds=='periodic':
-            bconds = dim*['p']
-        #end if
-        if axes is None:
-            axes   = []
-            bconds = []
-        #end if
+                center = self.dim*[0]
+
+        if (self.has_axes() and bconds is None) or bconds in {"periodic", "p"}:
+            self.bconds = ("p",) * self.dim
+        elif bconds == "open":
+            self.bconds = ("o",) * self.dim
+        else:
+            ...
+
         if elem_pos is not None:
-            ep = np.array(elem_pos.split(),dtype=str)
-            npe.reshape_inplace(ep, (ep.size//(dim+1), (dim+1)))
-            elem = ep[:,0].ravel()
-            pos  = ep[:,1:dim+1]
-        #end if
+            elem_pos = np.array(elem_pos.split(), dtype=str)
+            npe.reshape_inplace(
+                elem_pos,
+                (elem_pos.size//(dim+1), (dim+1)),
+                )
+            elem = elem_pos[:,0]
+            pos = elem_pos[:, 1:dim+1]
+        elif posu is not None:
+            pos = dot(posu, self.axes)
+        elif pos is None:
+            pos = np.empty((0, self.dim), dtype=float)
+
         if elem is None:
             elem = []
-        #end if
-        if posu is not None:
-            pos = posu
-        #end if
-        if pos is None:
-            pos = np.empty((0,dim))
-        #end if
+
+        self.set_elem(elem)
+        self.set_pos(pos)
+
         if kshift is None:
-            kshift = 0,0,0
-        #end if
-        self.scale    = 1.
+            kshift = (0, 0, 0)
+
         self.units    = units
-        self.dim      = dim
         self.center   = np.array(center,dtype=float)
-        self.axes     = np.array(axes,dtype=float)
-        self.set_bconds(bconds)
         self.set_elem(elem)
         self.set_pos(pos)
         self.set_mag(mag)
         self.set_frozen(frozen)
-        self.kpoints  = np.empty((0,dim))            
+        self.kpoints  = np.empty((0,self.dim))
         self.kweights = np.empty((0,))         
         self.background_charge = background_charge
         self.remove_folded_structure()
-        if len(axes)==0:
-            self.kaxes=np.array([])
-        else:
-            self.kaxes=2*pi*inv(self.axes).T
-        #end if
-        if posu is not None:
-            self.pos_to_cartesian()
-        #end if
+
         if use_prim is not None and use_prim is not False:
             self.become_primitive(source=use_prim,add_kpath=add_kpath)
-        #end if
+
         if tiling is not None:
             self.tile(tiling,in_place=True)
-        #end if
+
         if kpoints is not None:
             self.add_kpoints(kpoints,kweights)
-        #end if
+
         if kgrid is not None:
             if not symm_kgrid:
                 self.add_kmesh(kgrid,kshift)
             else:
                 self.add_symmetrized_kmesh(kgrid,kshift)
-            #end if
-        #end if
-        if rescale:
+
+        if scale != 1:
             self.rescale(scale)
-        else:
-            self.scale = scale
-        #end if
+
         if permute is not None:
             self.permute(permute)
-        #end if
-        if operations is not None:
-            self.operate(operations)
-        #end if
     #end def __init__
+
+    @property
+    def dim(self) -> int:
+        return self.axes.shape[0]
+    #end def dim
+
+    @property
+    def kaxes(self) -> npt.NDArray[np.floating]:
+        if len(self.axes) == 0:
+            return np.array([])
+        else:
+            return 2 * pi * inv(self.axes).T
+    #end def kaxes
 
 
     def check_consistent(self,tol=1e-8,exit=True,message=False):
@@ -1141,18 +1149,13 @@ class Structure(Sobj):
     #end def set_axes
 
 
-    def set_bconds(self,bconds):
-        self.bconds = np.array(tuple(bconds),dtype=str)
-    #end def bconds
-
-
     def set_elem(self,elem):
         self.elem = np.array(elem,dtype=object)
     #end def set_elem
 
     
-    def set_pos(self,pos):
-        self.pos = np.array(pos,dtype=float)
+    def set_pos(self, pos):
+        self.pos = np.array(pos, dtype=float)
         if len(self.pos)!=len(self.elem):
             self.error(
                 "Atomic positions must have same length as elem.\n"
@@ -1205,30 +1208,10 @@ class Structure(Sobj):
         return len(self.elem)
     #end def size
 
-    
+
     def has_axes(self):
-        return len(self.axes)==self.dim
+        return self.axes.shape != (0,)
     #end def has_axes
-
-
-    def operate(self,operations):
-        if isinstance(operations,obj):
-            operations = operations.values()
-        for op in operations:
-            if op not in self.operations:
-                self.error(
-                    "{0} is not a known operation\n"
-                    "valid options are:\n"
-                    "  {1}".format(
-                        op, list(self.operations.keys())
-                        )
-                    )
-            else:
-                self.operations[op](self)
-            #end if
-        #end for
-    #end def operate
-
 
     def has_tmatrix(self):
         return 'tmatrix' in self and self.tmatrix is not None
@@ -6363,9 +6346,7 @@ class Structure(Sobj):
             return s_trans,rmg_inputs,R,tmatrix,bv
         #end if
     #end def rmg_transform
-
 #end class Structure
-Structure.set_operations()
 
 
 #======================#
