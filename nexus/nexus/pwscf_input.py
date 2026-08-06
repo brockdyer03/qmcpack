@@ -2,288 +2,259 @@
 ##  (c) Copyright 2015-  by Jaron T. Krogel                     ##
 ##################################################################
 
+"""Supports I/O for PWSCF input files.
 
-#====================================================================#
-#  pwscf_input.py                                                    #
-#    Supports I/O for PWSCF input files.                             #
-#                                                                    #
-#  Content summary:                                                  #
-#    PwscfInput                                                      #
-#      SimulationInput class for PWSCF.                              #
-#      Can read/write most PWSCF input files.                        #
-#                                                                    #
-#    generate_pwscf_input                                            #
-#      User-facing function to create arbitrary input files.         #
-#                                                                    #
-#    PwscfInputBase                                                  #
-#      Base class for all other PWSCF input classes.                 #
-#      Contains a listing of all keyword variable names and types.   #
-#                                                                    #
-#    Element                                                         #
-#      Base class for two different types of PWSCF input sections:   #
-#      namelists (Section class) and 'cards' (Card class)            #
-#                                                                    #
-#    Section                                                         #
-#      Class representing keyword (namelist) input sections.         #
-#      Base class for other keyword input section classes.           #
-#      See control, system, electrons, ions, cell, phonon, and ee.   #
-#                                                                    #
-#    Card                                                            #
-#      Class representing formatted (card) input sections.           #
-#      Base class for other formatted section classes.               #
-#      See atomic_species, atomic_positions, k_points,               #
-#        cell_parameters, climbing_images, constraints,              #
-#        collective_vars, occupations and hubbard.                   #
-#                                                                    #
-#    QEXML                                                           #
-#      Class to represent an xml element.                            #
-#                                                                    #
-#    readval                                                         #
-#      Function converts an attribute value string to numeric form.  #
-#                                                                    #
-#====================================================================#
+PwscfInput
+    SimulationInput class for PWSCF.
+    Can read/write most PWSCF input files.
 
+generate_pwscf_input
+    User-facing function to create arbitrary input files.
 
-import os
-import sys
+Element
+    Base class for two different types of PWSCF input sections:
+    namelists (Section class) and 'cards' (Card class)
+
+Section
+    Class representing keyword (namelist) input sections.
+    Base class for other keyword input section classes.
+    See control, system, electrons, ions, cell, phonon, and ee.
+
+Card
+    Class representing formatted (card) input sections.
+    Base class for other formatted section classes.
+    See atomic_species, atomic_positions, k_points,
+      cell_parameters, climbing_images, constraints,
+      collective_vars, occupations and hubbard.
+"""
+
 import inspect
+import os
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from types import MappingProxyType
+from typing import ClassVar, Literal, TypeAlias
+
 import numpy as np
+import numpy.typing as npt
 from numpy import pi
 from numpy.linalg import inv
-from .developer import DevBase, obj, log, warn, error
-from .unit_converter import convert
+
+from . import numpy_extensions as npe
+from .developer import DevBase, error, obj, warn
 from .periodic_table import Elements
-from .structure import Structure, kmesh
 from .physical_system import PhysicalSystem
 from .pseudopotential import pp_elem_label
+from .pwscf_input_defs import (
+    CellDefinitions,
+    ControlDefinitions,
+    ElectronsDefinitions,
+    FcpDefinitions,
+    IonsDefinitions,
+    PwscfInputType,
+    RismDefinitions,
+    SystemDefinitions,
+)
 from .simulation import SimulationInput
-from . import numpy_extensions as npe
+from .structure import Structure, kmesh
+from .unit_converter import convert
 
-def read_str(sv):
+"""Union of all Namelist definition enums."""
+NamelistType: TypeAlias = (
+    type[CellDefinitions]
+    | type[ControlDefinitions]
+    | type[ElectronsDefinitions]
+    | type[FcpDefinitions]
+    | type[IonsDefinitions]
+    | type[RismDefinitions]
+    | type[SystemDefinitions]
+    )
+
+
+def read_str(sv: str) -> str:
+    """Read a string from a PwSCF input, removing leading and trailing quotes."""
     return sv.strip('"').strip("'")
 #end def read_str
 
-
-def read_int(sv):
+def read_int(sv: str) -> int:
+    """Read a string to an integer"""
     return int(sv)
 #end def read_int
 
+def read_float(sv: str) -> float:
+    """Read a string to a float (optionally in scientific notation)
 
-def read_float(sv):
+    This function is agnostic to Fortran-style scientific notation that
+    uses ``d`` or ``D`` as the exponent delimiter.
+    """
     return float(sv.replace('d','e').replace('D','e'))
 #end def read_float
 
-
-bconv = {'.true.':True,'.false.':False}
-def read_bool(sv):
-    return bconv[sv.lower()]
+def read_bool(sv: str) -> bool:
+    """Read a Fortran bool (``".true."`` or ``".false."``) to a Python bool"""
+    match sv.lower():
+        case ".true.":
+            return True
+        case ".false.":
+            return False
+        case _:
+            msg = f"Invalid string for reading boolean: {sv}"
+            raise ValueError(msg)
 #end def read_bool
 
-
-def write_str(val):
+def write_str(val: str) -> str:
+    """Write a Python str to a ``pw.x`` input-compatible representation"""
     return "'"+val+"'"
 #end def write_str
 
-
-def write_int(val):
+def write_int(val: int) -> str:
+    """Write a Python int to a ``pw.x`` input-compatible representation"""
     return str(val)
 #end def write_int
 
-
-def write_float(val):
+def write_float(val: float) -> str:
+    """Write a Python float to a ``pw.x`` input-compatible representation"""
     return str(val)
     #return '{0:20.18e}'.format(val)
 #end def write_float
 
-
-def write_bool(val):
-    if val:
+def write_bool(val: bool) -> Literal[".true.", ".false."]:  # noqa: FBT001
+    """Write a Python bool to a ``pw.x`` input-compatible representation"""
+    if val is True:
         return '.true.'
-    else:
+    elif val is False:
         return '.false.'
-    #end if
+    else:
+        msg = f"Non-boolean value provided, received type {type(val).__name__}"
+        raise TypeError(msg)
 #end def write_bool
 
 
-readval={str:read_str,int:read_int,float:read_float,bool:read_bool}
-writeval={str:write_str,int:write_int,float:write_float,bool:write_bool}
+"""Map from Python types to functions to parse them."""
+READ_VAL_MAP = MappingProxyType({
+    str  : read_str,
+    int  : read_int,
+    float: read_float,
+    bool : read_bool,
+    })
+
+"""Map from Python types to functions to write them."""
+WRITE_VAL_MAP = MappingProxyType({
+    str  : write_str,
+    int  : write_int,
+    float: write_float,
+    bool : write_bool,
+    })
 
 
-def write_scalar(var,val):
-    if isinstance(val,str):
-        vtype = str
-    elif isinstance(val,float):
-        vtype = float
-    elif var in PwscfInputBase.bools:
-        vtype = bool
-    elif isinstance(val,int):
-        vtype = int
-    else:
-        error('cannot write pwscf input file\nattempted to write variable with unknown scalar type\nvariable: {0}\ndata type: {1}'.format(var,val.__class__.__name__))
-    #end if
-    return writeval[vtype](val)
+def write_scalar(
+    var: str,
+    val: str | bool | int | float,  # noqa: FBT001
+    namelist: NamelistType | None = None
+    ) -> str:
+    """Write a scalar input variable and its value to a string.
+
+    Parameters
+    ----------
+    var : str
+        The name of the input variable.
+    val : str or bool or int or float
+        Value of the input variable.
+    namelist : NamelistType, optional
+        One of the namelist enums. If supplied, will double check that
+        ``val`` has the expected type of the variable.
+    """
+    match val:
+        case str() | np.str_():
+            vtype = str
+        case float() | np.floating():
+            vtype = float
+        case bool() | np.bool():
+            vtype = bool
+        case int() | np.integer():
+            vtype = int
+        case _:
+            error(
+                'cannot write pwscf input file\n'
+                'attempted to write variable with unknown scalar type\n'
+                'variable: {0}\n'
+                'data type: {1}'.format(
+                    var, val.__class__.__name__
+                    )
+                )
+
+    if namelist is not None and vtype is not namelist(var).datatype:
+        warn(
+            f"Datatype of `val` does not match the known datatype for {var}!\n"
+            f"  `val` datatype: ({vtype.__name__})\n"
+            f"  `var` datatype: ({namelist(var).datatype.__name__})"
+            )
+
+    return WRITE_VAL_MAP[vtype](val)
 #end def write_scalar
 
 
 def noconv(v):
+    """Trivial function that returns the input."""
     return v
 #end def noconv
 
 
-def array_from_lines(lines):
-    s=''
+def array_from_lines(lines: list[str]) -> npt.NDArray[np.floating]:
+    s = ""
     for l in lines:
-        s+=l+' '
-    #end for
-    a = np.fromstring(s,sep=' ')
+        s += l + " "
+
+    a = np.fromstring(s, sep=" ")
     nelem = len(a)
     nlines = len(lines)
-    dim = nelem//nlines
+    dim = nelem // nlines
     npe.reshape_inplace(a, (nlines, dim))
     return a
 #end def array_from_lines
 
 
-pwscf_precision = '16.8f'
-pwscf_array_format = '{0:'+pwscf_precision+'}' 
-def array_to_string(a,pad='   ',format=pwscf_array_format,converter=noconv,rowsep='\n'):
-    s=''
-    if len(a.shape)==1:
-        s+=pad
-        for v in a:
-            s += format.format(converter(v))+' '
-        #end for
-        s+=rowsep
+def array_to_string(
+    array: npt.ArrayLike[np.floating],
+    pad: str = "   ",
+    fmt: str = "16.8f",
+    converter: Callable = noconv,
+    rowsep: str = "\n",
+    ) -> str:
+    """Write a 1D or 2D array to a string.
+
+    Parameters
+    ----------
+    array : ArrayLike
+        The array to write to a string.
+    pad : str, default="   "
+        Padding added to every row of the array.
+    fmt : str, default="16.8f"
+        Formatting for the values in the array.
+    converter : Callable, default=noconv
+        A converter that can apply an operation to the individual values
+        of the array. The default performs no conversion.
+    rowsep : str, default="\\n"
+        Separator between rows.
+    """
+    s = ""
+    if len(array.shape) == 1:
+        s += pad
+        for val in array:
+            s += f"{converter(val):{fmt}} "
+        s += rowsep
     else:
-        for r in a:
-            s+=pad
-            for v in r:
-                s += format.format(converter(v))+' '
-            #end for
-            s+=rowsep
-        #end for
-    #end if
+        for row in array:
+            s += pad
+            for val in row:
+                s += f"{converter(val):{fmt}} "
+            s += rowsep
+
     return s
 #end def array_to_string
 
 
-            
-
-class PwscfInputBase(DevBase):
-    ints=frozenset({
-        # pre 5.4
-        'nstep','iprint','gdir','nppstr','nberrycyc','ibrav','nat','ntyp',
-        'nbnd','nr1','nr2','nr3','nr1s','nr2s','nr3s','nspin',
-        'multiplicity','edir','report','electron_maxstep',
-        'mixing_ndim','mixing_fixed_ns','ortho_para','diago_cg_maxiter',
-        'diago_david_ndim','nraise','bfgs_ndim','num_of_images','fe_nstep',
-        'sw_nstep','modenum','n_charge_compensation','nlev','lda_plus_u_kind',
-        # 5.4 additions
-        'nqx1','nqx2','nqx3','esm_nfit','space_group','origin_choice',
-        # 6.3 additions
-        'dftd3_version',
-        })
-    floats=frozenset({
-        # pre 5.4
-        'dt','max_seconds','etot_conv_thr','forc_conv_thr','celldm','a','b','c',
-        'cosab','cosac','cosbc','nelec','ecutwfc','ecutrho','degauss',
-        'tot_charge','tot_magnetization','starting_magnetization','nelup',
-        'neldw','ecfixed','qcutz','q2sigma','hubbard_alpha','hubbard_u','hubbard_j',
-        'starting_ns_eigenvalue','emaxpos','eopreg','eamp','angle1','angle2',
-        'fixed_magnetization','lambda','london_s6','london_rcut','conv_thr',
-        'mixing_beta','diago_thr_init','efield','tempw','tolp','delta_t','upscale',
-        'trust_radius_max','trust_radius_min','trust_radius_ini','w_1','w_2',
-        'temp_req','ds','k_max','k_min','path_thr','fe_step','g_amplitude',
-        'press','wmass','cell_factor','press_conv_thr','xqq','ecutcoarse',
-        'mixing_charge_compensation','comp_thr','exx_fraction','ecutfock',
-        # 5.4 additions
-        'conv_thr_init','conv_thr_multi','efield_cart','screening_parameter',
-        'ecutvcut','hubbard_j0','hubbard_beta','esm_w','esm_efield','fcp_mu',
-        'london_c6','london_rvdw','xdm_a1','xdm_a2',
-        # 6.3 additions
-        'block_1','block_2','block_height','zgate','ts_vdw_econv_thr',
-        'starting_charge'
-        })
-    strs=frozenset({
-        # pre 5.4
-        'calculation','title','verbosity','restart_mode','outdir','wfcdir',
-        'prefix','disk_io','pseudo_dir','occupations','smearing','input_dft',
-        'u_projection_type','constrained_magnetization','mixing_mode',
-        'diagonalization','startingpot','startingwfc','ion_dynamics',
-        'ion_positions','phase_space','pot_extrapolation','wfc_extrapolation',
-        'ion_temperature','opt_scheme','ci_scheme','cell_dynamics',
-        'cell_dofree','which_compensation','assume_isolated','exxdiv_treatment',
-        # 5.4 additions
-        'esm_bc','vdw_corr',
-        # 6.3 additions
-        'efield_phase',
-        })
-    bools=frozenset({
-        # pre 5.4
-        'wf_collect','tstress','tprnfor','lkpoint_dir','tefield','dipfield',
-        'lelfield','lberry','nosym','nosym_evc','noinv','force_symmorphic',
-        'noncolin','lda_plus_u','lspinorb','do_ee','london','diago_full_acc',
-        'tqr','remove_rigid_rot','refold_pos','first_last_opt','use_masses',
-        'use_freezing','la2f',
-        # 5.4 additions
-        'lorbm','lfcpopt','scf_must_converge','adaptive_thr','no_t_rev',
-        'use_all_frac','one_atom_occupations','starting_spin_angle',
-        'x_gamma_extrapolation','xdm','uniqueb','rhombohedral',
-        # 6.3 additions
-        'gate','block','relaxz','dftd3_threebody','ts_vdw_isolated','lforcet',
-        })
-
-    real_arrays = frozenset({
-        'celldm', 'starting_magnetization', 'hubbard_alpha', 'hubbard_u',
-        'hubbard_j0', 'hubbard_beta', 'hubbard_j',
-        'starting_ns_eigenvalue', 'angle1', 'angle2', 'fixed_magnetization',
-        'fe_step', 'efield_cart', 'london_c6', 'london_rvdw',
-        'starting_charge',
-        })
-
-    species_arrays = frozenset({
-        'starting_magnetization', 'hubbard_alpha', 'hubbard_u', 'hubbard_j0',
-        'hubbard_beta', 'hubbard_j', 'angle1', 'angle2',
-        'london_c6', 'london_rvdw','starting_charge',
-        })
-
-    species_array_indices = obj(hubbard_j=1)
-
-    multidimensional_arrays = frozenset({'starting_ns_eigenvalue', 'hubbard_j'})
-
-    all_variables = ints | floats | strs | bools
-
-    section_aliases = MappingProxyType(dict(
-        celldm1='celldm(1)',
-        celldm2='celldm(2)',
-        celldm3='celldm(3)',
-        celldm4='celldm(4)',
-        celldm5='celldm(5)',
-        celldm6='celldm(6)'
-        ))
-
-    var_types = dict()  # noqa: RUF012
-    for v in ints:
-        var_types[v]=int
-    #end for
-    for v in floats:
-        var_types[v]=float
-    #end for
-    for v in strs:
-        var_types[v]=str
-    #end for
-    for v in bools:
-        var_types[v]=bool
-    #end for
-    var_types: MappingProxyType[str, type] = MappingProxyType(var_types)
-#end class PwscfInputBase
-
-
-
-
-class Element(PwscfInputBase):
+class Element:
     name = None
     def add(self,**variables):
         self.update(**variables)
@@ -303,24 +274,7 @@ class Element(PwscfInputBase):
 #end class Element
 
 
-
-
 class Section(Element):
-    @classmethod
-    def class_init(cls):
-        cls.varlist   = list(cls.variables)
-        cls.variables = set([v.lower() for v in cls.varlist])
-        cls.case_map = obj()
-        for vname in cls.varlist:
-            cls.case_map[vname.lower()] = vname
-        #end for
-    #end if
-
-    def assign(self,**variables):
-        self.update(**variables)
-    #end def assign
-
-
     def read(self,lines):
         for l in lines:
             # exclude comments
@@ -379,7 +333,7 @@ class Section(Element):
                         self.error('a type has not been specified for variable "{0}"\nplease add it to PwscfInputBase'.format(varname),trace=False)
                     #end if
                     vtype = self.var_types[varname]
-                    val = readval[vtype](val)
+                    val = READ_VAL_MAP[vtype](val)
                     if varname not in self.real_arrays:
                         self[var] = val
                     else:
@@ -475,10 +429,221 @@ class Section(Element):
         c+='/'+'\n\n'
         return c
     #end def write
-
 #end class Section
 
 
+class NamelistBase(DevBase):
+    """Base class for instances of namelists."""
+
+    name: ClassVar[Literal["cell", "control", "electrons", "fcp", "ions", "rism", "system"]]
+    namelist_def: ClassVar[NamelistType]
+    params: dict[str, PwscfInputType]
+
+    def __init__(
+        self,
+        *,
+        check: bool = False,
+        version: str | None = None,
+        system: PhysicalSystem | None = None,
+        verbose: bool = False,
+        strict: bool = False,
+        **params: PwscfInputType,
+        ):
+        for name, value in params.items():
+            if check:
+                self.__class__.check_param(
+                    name    = name,
+                    value   = value,
+                    version = version,
+                    system  = system,
+                    verbose = verbose,
+                    strict  = strict
+                    )
+            self.params[name.lower()] = value
+    #end def __init__
+
+    @classmethod
+    def check_param(
+        cls,
+        name: str,
+        value: PwscfInputType,
+        version: str | None = None,
+        system: PhysicalSystem | None = None,
+        *,
+        verbose: bool = False,
+        strict: bool = False,
+        ) -> None:
+        """Check that a parameter meets the specification from its namelist enum.
+
+        Parameters
+        ----------
+        name : str
+            The parameter name, case-insensitive.
+        value : str or bool or int or float or Sequence or Mapping
+            The value of the parameter.
+        version : str, optional
+            The version to check against, if it is requested.
+        system : PhysicalSystem, optional
+            The ``PhysicalSystem`` to check species arrays against.
+        verbose : bool, default=False
+            Whether or not to emit a warning for a failed check.
+            Overridden by ``strict``.
+        strict : bool, default=False
+            Set to ``True`` to raise an error instead of emit a warning.
+
+        Raises
+        ------
+        ValueError
+            If the value is not known, or if it is not in the known set
+            of allowed values.
+        TypeError
+            If the value is not of the correct type.
+        """
+        try:
+            param_def = cls.namelist_def(name)
+        except ValueError:
+            msg = f"The parameter `{name}` is not known to Nexus, no checks will be performed"
+            if strict:
+                raise ValueError(msg) from None
+            elif verbose:
+                warn(msg)
+                return # Return early since we can't do the rest of the checks.
+        #end try
+
+        msg = (
+            "The parameter `"+name+"` has the incorrect {attr}!\n"
+            "Expected {attr}: {known}\n"
+            "Given {attr}:    {given}"
+            )
+
+        def_shape     = param_def.shape
+        def_type      = param_def.datatype
+        def_allowed   = param_def.allowed_values
+        def_v_added   = param_def.version_added
+        def_v_removed = param_def.version_removed
+
+        if def_shape is None: # Scalar, includes strings
+            comp_type = type(value)
+        elif isinstance(value, Mapping):
+            comp_type = type(value.values()[0])
+        else: # Can only be list or tuple or other such sequence
+            comp_type = type(value[0])
+        #end if
+
+        if comp_type != def_type: # Use != instead of is not to account for Numpy types
+            msg = msg.format(
+                attr="type", known=def_type.__name__, given=comp_type.__name__
+                )
+            if strict:
+                raise TypeError(msg)
+            elif verbose:
+                warn(msg)
+        #end if comp_type != def_type
+
+        if def_allowed is not None and value not in def_allowed:
+            msg = msg.format(attr="value", known=def_allowed, given=value)
+            if strict:
+                raise ValueError(msg)
+            elif verbose:
+                warn(msg)
+        #end if def_allowed is not None and value not in def_allowed
+
+        if def_shape is not None:
+            valid, msg = cls._check_param_shape(
+                name   = name,
+                value  = value,
+                shape  = def_shape,
+                system = system,
+                )
+            if not valid:
+                if strict:
+                    raise ValueError(msg)
+                elif verbose:
+                    warn(msg)
+        #end if def_shape is not None
+
+        if version is not None:
+            valid, msg = cls._check_param_version(
+                name    = name,
+                value   = value,
+                current = version,
+                added   = def_v_added,
+                removed = def_v_removed,
+                )
+            if not valid:
+                if strict:
+                    raise ValueError(msg)
+                elif verbose:
+                    warn(msg)
+        #end if version is not None
+
+    @staticmethod
+    def _check_param_shape(
+        *,
+        name: str,
+        value: Mapping,
+        shape: tuple,
+        system: PhysicalSystem,
+        ) -> tuple[bool, str]:
+        """Check that a non-scalar parameter has the correct shape."""
+        valid = True
+        msg = (
+            "The value for `{name}` does not have the correct shape!\n"
+            "Given indices: {given}\n"
+            "Known shape:   {known}"
+            )
+        if isinstance(shape[1], int) and max(value.keys()) > shape[1]:
+            # Case: Fixed-shape arrays like `celldm`
+            valid = False
+            msg = msg.format(
+                name  = name,
+                given = tuple(value.keys()),
+                known = shape,
+                )
+
+        elif isinstance(shape[1], str):
+            # Case: Species arrays like `starting_charge`
+            if shape[1] in {"ntyp", "ntype"} and max(value.keys()) > system.n_species:
+                # old hubbard_j0 had `ntype` instead of `ntyp`
+                valid = False
+                msg = msg.format(
+                    name  = name,
+                    given = tuple(value.keys()),
+                    known = (1, system.n_species),
+                    )
+            elif shape[1] == "natx" and max(value.keys()) != system.n_ions:
+                # Unused as of QE 7.6.0, but may get used in future versions
+                valid = False
+                msg = msg.format(
+                    name  = name,
+                    given = tuple(value.keys()),
+                    known = (1, system.n_ions),
+                    )
+            else:
+                msg = f"Shape checking for shape `{shape}` required by param `{name}` has not been implemented!"
+                raise NotImplementedError(msg)
+
+        elif isinstance(shape[1], tuple):
+            # Case: Multidimensional arrays like `starting_ns_eigenvalue`
+            ...
+
+        if valid:
+            return valid, ""
+        else:
+            return valid, msg
+
+
+    @staticmethod
+    def _check_param_version(
+        *,
+        name: str,
+        value: PwscfInputType,
+        current: str,
+        added: str,
+        removed: str
+        ) -> tuple[bool, str]:
+        ...
+#end class NamelistBase
 
 
 class Card(Element):
@@ -522,465 +687,6 @@ class Card(Element):
 #end class Card
 
 
-
-class control(Section):
-    name = 'control'
-
-    # all known keywords
-    variables = (
-        'calculation','title','verbosity','restart_mode','wf_collect','nstep',
-        'iprint','tstress','tprnfor','dt','outdir','wfcdir','prefix',
-        'lkpoint_dir','max_seconds','etot_conv_thr','forc_conv_thr','disk_io',
-        'pseudo_dir','tefield','dipfield','lelfield','nberrycyc','lorbm',
-        'lberry','gdir','nppstr','lfcpopt','gate'
-        )
-
-    # 6.3 keyword spec
-    new_variables =  (
-        'calculation','title','verbosity','restart_mode','wf_collect','nstep',
-        'iprint','tstress','tprnfor','dt','outdir','wfcdir','prefix',
-        'lkpoint_dir','max_seconds','etot_conv_thr','forc_conv_thr','disk_io',
-        'pseudo_dir','tefield','dipfield','lelfield','nberrycyc','lorbm',
-        'lberry','gdir','nppstr','lfcpopt','gate'
-        )
-
-    # 5.4 keyword spec
-    #variables = [
-    #    'calculation','title','verbosity','restart_mode','wf_collect','nstep',
-    #    'iprint','tstress','tprnfor','dt','outdir','wfcdir','prefix',
-    #    'lkpoint_dir','max_seconds','etot_conv_thr','forc_conv_thr','disk_io',
-    #    'pseudo_dir','tefield','dipfield','lelfield','nberrycyc','lorbm','lberry',
-    #    'gdir','nppstr','lfcpopt'
-    #    ]
-
-    # sometime prior to 5.4
-    #variables = [
-    #    'calculation','title','verbosity','restart_mode','wf_collect','nstep',
-    #    'iprint','tstress','tprnfor','dt','outdir','wfcdir','prefix',
-    #    'lkpoint_dir','max_seconds','etot_conv_thr','forc_conv_thr','disk_io',
-    #    'pseudo_dir','tefield','dipfield','lelfield','lberry','gdir','nppstr',
-    #    'nberrycyc'
-    #    ]
-#end class control
-
-
-
-class system(Section):
-    name = 'system'
-
-    # all known keywords
-    variables = (
-        'ibrav','celldm','A','B','C','cosAB','cosAC','cosBC','nat','ntyp',
-        'nbnd','tot_charge','tot_magnetization','starting_magnetization',
-        'ecutwfc','ecutrho','ecutfock','nr1','nr2','nr3','nr1s','nr2s','nr3s',
-        'nosym','nosym_evc','noinv','no_t_rev','force_symmorphic','use_all_frac',
-        'occupations','one_atom_occupations','starting_spin_angle','degauss',
-        'smearing','nspin','noncolin','ecfixed','qcutz','q2sigma','input_dft',
-        'exx_fraction','screening_parameter','exxdiv_treatment',
-        'x_gamma_extrapolation','ecutvcut','nqx1','nqx2','nqx3','lda_plus_u',
-        'lda_plus_u_kind','Hubbard_U','Hubbard_J0','Hubbard_alpha',
-        'Hubbard_beta','Hubbard_J','starting_ns_eigenvalue','U_projection_type',
-        'edir','emaxpos','eopreg','eamp','angle1','angle2',
-        'constrained_magnetization','fixed_magnetization','lambda','report',
-        'lspinorb','assume_isolated','esm_bc','esm_w','esm_efield','esm_nfit',
-        'fcp_mu','vdw_corr','london','london_s6','london_c6','london_rvdw',
-        'london_rcut','xdm','xdm_a1','xdm_a2','space_group','uniqueb',
-        'origin_choice','rhombohedral',
-        'nelec','nelup','neldw','multiplicity','do_ee','la2F',
-        'block','block_1','block_2','block_height','dftd3_threebody',
-        'dftd3_version','lforcet','relaxz','starting_charge','ts_vdw_econv_thr',
-        'ts_vdw_isolated','zgate'
-        )
-
-    # 6.3 keyword spec
-    new_variables = (
-        'ibrav','celldm','A','B','C','cosAB','cosAC','cosBC','nat','ntyp',
-        'nbnd','tot_charge','starting_charge','tot_magnetization',
-        'starting_magnetization','ecutwfc','ecutrho','ecutfock','nr1','nr2',
-        'nr3','nr1s','nr2s','nr3s','nosym','nosym_evc','noinv','no_t_rev',
-        'force_symmorphic','use_all_frac','occupations','one_atom_occupations',
-        'starting_spin_angle','degauss','smearing','nspin','noncolin','ecfixed',
-        'qcutz','q2sigma','input_dft','exx_fraction','screening_parameter',
-        'exxdiv_treatment','x_gamma_extrapolation','ecutvcut','nqx1','nqx2',
-        'nqx3','lda_plus_u','lda_plus_u_kind','Hubbard_U','Hubbard_J0',
-        'Hubbard_alpha','Hubbard_beta','Hubbard_J','starting_ns_eigenvalue',
-        'U_projection_type','edir','emaxpos','eopreg','eamp','angle1','angle2',
-        'lforcet','constrained_magnetization','fixed_magnetization','lambda',
-        'report','lspinorb','assume_isolated','esm_bc','esm_w','esm_efield',
-        'esm_nfit','fcp_mu','vdw_corr','london','london_s6','london_c6',
-        'london_rvdw','london_rcut','dftd3_version','dftd3_threebody',
-        'ts_vdw_econv_thr','ts_vdw_isolated','xdm','xdm_a1','xdm_a2',
-        'space_group','uniqueb','origin_choice','rhombohedral','zgate','relaxz',
-        'block','block_1','block_2','block_height'
-        )
-
-    # 5.4 keyword spec
-    #variables = [
-    #    'ibrav','celldm','A','B','C','cosAB','cosAC','cosBC','nat','ntyp',
-    #    'nbnd','tot_charge','tot_magnetization','starting_magnetization',
-    #    'ecutwfc','ecutrho','ecutfock','nr1','nr2','nr3','nr1s','nr2s','nr3s',
-    #    'nosym','nosym_evc','noinv','no_t_rev','force_symmorphic','use_all_frac',
-    #    'occupations','one_atom_occupations','starting_spin_angle','degauss',
-    #    'smearing','nspin','noncolin','ecfixed','qcutz','q2sigma','input_dft',
-    #    'exx_fraction','screening_parameter','exxdiv_treatment',
-    #    'x_gamma_extrapolation','ecutvcut','nqx1','nqx2','nqx3','lda_plus_u',
-    #    'lda_plus_u_kind','Hubbard_U','Hubbard_J0','Hubbard_alpha',
-    #    'Hubbard_beta','Hubbard_J','starting_ns_eigenvalue','U_projection_type',
-    #    'edir','emaxpos','eopreg','eamp','angle1','angle2',
-    #    'constrained_magnetization','fixed_magnetization','lambda','report',
-    #    'lspinorb','assume_isolated','esm_bc','esm_w','esm_efield','esm_nfit',
-    #    'fcp_mu','vdw_corr','london','london_s6','london_c6','london_rvdw',
-    #    'london_rcut','xdm','xdm_a1','xdm_a2','space_group','uniqueb',
-    #    'origin_choice','rhombohedral'
-    #    ]
-
-    # sometime prior to 5.4
-    #variables = [
-    #    'ibrav','celldm','A','B','C','cosAB','cosAC','cosBC','nat','ntyp',
-    #    'nbnd','nelec','tot_charge','ecutwfc','ecutrho','nr1','nr2','nr3',
-    #    'nr1s','nr2s','nr3s','nosym','nosym_evc','noinv','force_symmorphic',
-    #    'occupations','degauss','smearing','nspin','noncolin',
-    #    'starting_magnetization','nelup','neldw','multiplicity',
-    #    'tot_magnetization','ecfixed','qcutz','q2sigma','input_dft',
-    #    'lda_plus_u','Hubbard_alpha','Hubbard_U','starting_ns_eigenvalue',
-    #    'U_projection_type','edir','emaxpos','eopreg','eamp','angle1',
-    #    'angle2','constrained_magnetization','fixed_magnetization','lambda',
-    #    'report','lspinorb','assume_isolated','do_ee','london','london_s6',
-    #    'london_rcut','exx_fraction','ecutfock',
-    #    'lda_plus_u_kind','Hubbard_J','exxdiv_treatment','la2F'
-    #    ]
-
-    atomic_variables = obj(
-        hubbard_u = 'Hubbard_U',
-        start_mag = 'starting_magnetization',
-        hubbard_j = 'Hubbard_J',
-        angle1    = 'angle1',
-        angle2    = 'angle2',
-        )
-
-    # specialized read for partial array variables (hubbard U, starting mag, etc)
-    def post_process_read(self,parent):
-        if 'atomic_species' in parent:
-            keys = self.keys()
-            for alias,name in self.atomic_variables.items():
-                has_var = False
-                avals = obj()
-                akeys = []
-                for key in keys:
-                    if key.startswith(name):
-                        akeys.append(key)
-                        if '(' not in key:
-                            index=1
-                        else:
-                            index = int(key.replace(name,'').strip('()'))
-                        #end if
-                        avals[index] = self[key]
-                    #end if
-                #end for
-                if has_var:
-                    for key in akeys:
-                        del self[key]
-                    #end for
-                    atoms = parent.atomic_species.atoms
-                    value = obj()
-                    for i in range(len(atoms)):
-                        index = i+1
-                        if index in avals:
-                            value[atoms[i]] = avals[i+1]
-                        #end if
-                    #end for
-                    self[alias] = value
-                #end if
-            #end for
-        #end if
-    #end def post_process_read
-
-
-    # specialized write for odd handling of hubbard U
-    def write_old(self,parent):
-        cls = self.__class__
-        c='&'+self.name.upper()+'\n'
-        vars = list(self.keys())
-        vars.sort()
-        for var in vars:
-            val = self[var]
-            if var in self.atomic_variables:
-                if val is None: # jtk mark: patch fix for generate_pwscf_input
-                    continue    #    i.e. hubbard_u = None
-                #end if
-                if 'atomic_species' in parent:
-                    atoms = parent.atomic_species.atoms
-                    avar = self.atomic_variables[var]
-                    for i in range(len(atoms)):
-                        index = i+1
-                        vname = '{0}({1})'.format(avar,index)
-                        atom = atoms[i]
-                        if atom in val:
-                            sval = writeval[float](val[atom])
-                            c+='   '+'{0:<15} = {1}\n'.format(vname,sval)
-                        #end if
-                    #end for
-                else:
-                    self.error('cannot write {0}, atomic_species is not present'.format(var))
-                #end if
-            else:
-                #vtype = type(val)
-                #sval = writeval[vtype](val)
-
-                vtype = None
-                if isinstance(val,str):
-                    vtype = str
-                elif isinstance(val,float):
-                    vtype = float
-                #elif isinstance(val,bool):
-                #    vtype = bool
-                elif var in self.bools:
-                    vtype = bool
-                elif isinstance(val,int):
-                    vtype = int
-                else:
-                    self.error('Type "{0}" is not known as a value of variable "{1}".\nThis may reflect a need for added developer attention to support this type.  Please contact a developer.'.format(vtype.__class__.__name__,var))
-                #end if
-                sval = writeval[vtype](val)
-
-                if var in self.section_aliases.keys():
-                    vname = self.section_aliases[var]
-                else:
-                    vname = var
-                #end if
-                if vname in cls.case_map:
-                    vname = cls.case_map[vname]
-                #end if
-                #c+='   '+vname+' = '+sval+'\n'
-                c+='   '+'{0:<15} = {1}\n'.format(vname,sval)
-            #end if
-        #end for
-        c+='/'+'\n\n'
-        return c
-    #end def write
-
-#end class system
-
-
-class electrons(Section):
-    name = 'electrons'
-
-    # all known keywords
-    variables = (
-        'electron_maxstep','scf_must_converge','conv_thr','adaptive_thr',
-        'conv_thr_init','conv_thr_multi','mixing_mode','mixing_beta',
-        'mixing_ndim','mixing_fixed_ns','diagonalization','ortho_para',
-        'diago_thr_init','diago_cg_maxiter','diago_david_ndim','diago_full_acc',
-        'efield','efield_cart','startingpot','startingwfc','tqr',
-        'efield_phase'
-        )
-
-    # 6.3 keyword spec
-    new_variables = (
-        'electron_maxstep','scf_must_converge','conv_thr','adaptive_thr',
-        'conv_thr_init','conv_thr_multi','mixing_mode','mixing_beta',
-        'mixing_ndim','mixing_fixed_ns','diagonalization','ortho_para',
-        'diago_thr_init','diago_cg_maxiter','diago_david_ndim','diago_full_acc',
-        'efield','efield_cart','efield_phase','startingpot','startingwfc','tqr'
-        )
-
-    # 5.4 keyword spec
-    #variables = [
-    #    'electron_maxstep','scf_must_converge','conv_thr','adaptive_thr',
-    #    'conv_thr_init','conv_thr_multi','mixing_mode','mixing_beta',
-    #    'mixing_ndim','mixing_fixed_ns','diagonalization','ortho_para',
-    #    'diago_thr_init','diago_cg_maxiter','diago_david_ndim','diago_full_acc',
-    #    'efield','efield_cart','startingpot','startingwfc','tqr'
-    #    ]
-
-    # sometime prior to 5.4
-    #variables =  [
-    #    'electron_maxstep','conv_thr','mixing_mode','mixing_beta','mixing_ndim',
-    #    'mixing_fixed_ns','diagonalization','ortho_para','diago_thr_init',
-    #    'diago_cg_maxiter','diago_david_ndim','diago_full_acc','efield',
-    #    'startingpot','startingwfc','tqr'
-    #    ]
-#end class electrons
-
-
-class ions(Section):
-    name = 'ions'
-
-    # all known keywords
-    variables = (
-        'ion_dynamics','ion_positions','pot_extrapolation','wfc_extrapolation',
-        'remove_rigid_rot','ion_temperature','tempw','tolp','delta_t','nraise',
-        'refold_pos','upscale','bfgs_ndim','trust_radius_max','trust_radius_min',
-        'trust_radius_ini','w_1','w_2',
-        'num_of_images','opt_scheme','CI_scheme','first_last_opt','temp_req',
-        'ds','k_max','k_min','path_thr','use_masses','use_freezing','fe_step',
-        'g_amplitude','fe_nstep','sw_nstep','phase_space',
-        )
-
-    # 6.3 keyword spec
-    new_variables = (
-        'ion_dynamics','ion_positions','pot_extrapolation','wfc_extrapolation',
-        'remove_rigid_rot','ion_temperature','tempw','tolp','delta_t','nraise',
-        'refold_pos','upscale','bfgs_ndim','trust_radius_max',
-        'trust_radius_min','trust_radius_ini','w_1','w_2'
-        )
-
-    # 5.4 keyword spec
-    #variables = [
-    #    'ion_dynamics','ion_positions','pot_extrapolation','wfc_extrapolation',
-    #    'remove_rigid_rot','ion_temperature','tempw','tolp','delta_t','nraise',
-    #    'refold_pos','upscale','bfgs_ndim','trust_radius_max','trust_radius_min',
-    #    'trust_radius_ini','w_1','w_2'
-    #    ]
-
-    # sometime prior to 5.4
-    #variables = [
-    #    'ion_dynamics','ion_positions','phase_space','pot_extrapolation',
-    #    'wfc_extrapolation','remove_rigid_rot','ion_temperature','tempw',
-    #    'tolp','delta_t','nraise','refold_pos','upscale','bfgs_ndim',
-    #    'trust_radius_max','trust_radius_min','trust_radius_ini','w_1','w_2',
-    #    'num_of_images','opt_scheme','CI_scheme','first_last_opt','temp_req',
-    #    'ds','k_max','k_min','path_thr','use_masses','use_freezing','fe_step',
-    #    'g_amplitude','fe_nstep','sw_nstep'
-    #    ]
-#end class ions
-
-
-class cell(Section):
-    name = 'cell'
-
-    # all known keywords
-    variables = (
-        'cell_dynamics','press','wmass','cell_factor','press_conv_thr',
-        'cell_dofree'
-        )
-
-    # 6.3 keyword spec
-    new_variables = (
-        'cell_dynamics','press','wmass','cell_factor','press_conv_thr',
-        'cell_dofree'
-        )
-
-    # 5.4 keyword spec
-    #variables = [
-    #    'cell_dynamics','press','wmass','cell_factor','press_conv_thr',
-    #    'cell_dofree'
-    #    ]
-
-    # sometime prior to 5.4
-    #variables =  [
-    #    'cell_dynamics','press','wmass','cell_factor','press_conv_thr',
-    #    'cell_dofree'
-    #    ]
-#end class cell
-
-
-class phonon(Section):
-    name = 'phonon'
-    # all known keywords
-    variables =  ('modenum','xqq')
-
-    # sometime prior to 5.4
-    #variables =  ['modenum','xqq']
-#end class phonon
-
-
-class ee(Section):
-    name = 'ee'
-    # all known keywords
-    variables = (
-        'which_compensation','ecutcoarse','mixing_charge_compensation',
-        'n_charge_compensation','comp_thr','nlev'
-        )
-
-    # sometime prior to 5.4
-    #variables = [
-    #    'which_compensation','ecutcoarse','mixing_charge_compensation',
-    #    'n_charge_compensation','comp_thr','nlev'
-    #    ]
-#end class ee
-
-
-section_classes = [
-    control,system,electrons,ions,cell,phonon,ee
-    ]
-for sec in section_classes:
-    sec.class_init()
-#end for
-
-
-def check_new_variables(*,exit=True):
-    sections = section_classes
-    msg = ''
-    for section in sections:
-        if hasattr(section,'new_variables'):
-            new_vars = set([v.lower() for v in section.new_variables])
-            missing = new_vars-set(section.variables)
-            if len(missing)>0:
-                msg += '\n'+section.__name__+'\n'
-                msg += '{0}\n'.format(sorted(missing))
-            #end if
-        #end if
-    #end for
-    if len(msg)>0:
-        msg = 'some sections are missing variables, see below\n'+msg
-        error(msg)
-    else:
-        log('section checks of new variables passed')
-    #end if
-    if exit:
-        sys.exit()
-    #end if
-#end def check_new_variables
-#check_new_variables()
-
-
-def check_section_classes(*,exit=True):
-    sections = section_classes
-    all_variables = PwscfInputBase.all_variables
-    global_missing = set(all_variables)
-    local_missing = obj()
-    locs_missing = False
-    secs = obj()
-    for section in sections:
-        variables = section.variables
-        global_missing -= variables
-        loc_missing = variables - all_variables
-        local_missing[section.name] = loc_missing
-        locs_missing |= len(loc_missing)>0
-        secs[section.name] = section
-    #end for
-    if len(global_missing)>0 or locs_missing:
-        msg = 'PwscfInput: variable information is not consistent for section classes\n'
-        if len(global_missing)>0:
-            msg+='  some typed variables have not been assigned to a section:\n    {0}\n'.format(sorted(global_missing))
-        #end if
-        if locs_missing:
-            for name in sorted(local_missing.keys()):
-                lmiss = local_missing[name]
-                if len(lmiss)>0:
-                    vmiss = []
-                    for vname in secs[name].varlist:
-                        if vname in lmiss:
-                            vmiss.append(vname)
-                        #end if
-                    #end for
-                    msg+='  some variables in section {0} have not been assigned a type\n    missing variable counts: {1} {2}\n    missing variables: {3}\n'.format(name,len(lmiss),len(vmiss),vmiss)
-                #end if
-            #end for
-        #end if
-        error(msg)
-    else:
-        log('pwscf input checks passed')
-    #end if
-    if exit:
-        sys.exit()
-    #end if
-#end def check_section_classes
-#check_section_classes()
-
-
-
 class atomic_species(Card):
     name = 'atomic_species'
 
@@ -1006,7 +712,6 @@ class atomic_species(Card):
         return c
     #end def write_text
 #end class atomic_species
-
 
 
 class atomic_positions(Card):
@@ -1049,7 +754,7 @@ class atomic_positions(Card):
             c +='   '+'{0:2}'.format(self.atoms[i])+' '
             c += array_to_string(self.positions[i],pad='',rowsep=rowsep)
             if has_relax_directions:
-                c += array_to_string(self.relax_directions[i],pad='',format='{0}')
+                c += array_to_string(self.relax_directions[i],pad='',fmt='{0}')
             #end if
         #end for
         return c
@@ -1092,9 +797,7 @@ class atomic_positions(Card):
         self.positions = pos
         self.specifier = new_specifier
     #end def change_specifier
-
 #end class atomic_positions
-
 
 
 class atomic_forces(Card):
@@ -1126,7 +829,6 @@ class atomic_forces(Card):
         return c
     #end def write_text
 #end class atomic_forces
-
 
 
 class k_points(Card):
@@ -1162,8 +864,8 @@ class k_points(Card):
             c+=array_to_string(a)
         elif self.specifier == 'automatic':
             c+='   '
-            c+=array_to_string(np.array(self.grid),pad='',format='{0}',converter=int,rowsep='')
-            c+=array_to_string(np.array(self.shift),pad=' ',format='{0}',converter=int)
+            c+=array_to_string(np.array(self.grid),pad='',fmt='{0}',converter=int,rowsep='')
+            c+=array_to_string(np.array(self.shift),pad=' ',fmt='{0}',converter=int)
         elif self.specifier == 'gamma':
             None
         else:
@@ -1216,8 +918,6 @@ class k_points(Card):
 #end class k_points
 
 
-
-
 class cell_parameters(Card):
     name = 'cell_parameters'
 
@@ -1262,8 +962,6 @@ class cell_parameters(Card):
 #end class cell_parameters
 
 
-
-
 class climbing_images(Card):
     name = 'climbing_images'
 
@@ -1279,8 +977,6 @@ class climbing_images(Card):
         return c
     #end def write_text
 #end class climbing_images
-
-
 
 
 class constraints(Card):
@@ -1315,8 +1011,6 @@ class constraints(Card):
 #end class constraints
 
 
-
-
 class collective_vars(Card):
     name = 'collective_vars'
 
@@ -1347,8 +1041,6 @@ class collective_vars(Card):
         return c
     #end def write_text
 #end class collective_vars
-
-
 
 
 class occupations(Card):
@@ -1495,17 +1187,30 @@ class hubbard(Card):
 #end class hubbard
 
 
-
-
-
-
-
 class PwscfInput(SimulationInput):
 
-    sections = ('control','system','electrons','ions','cell','phonon','ee')
-    cards    = ('atomic_species','atomic_positions','atomic_forces',
-                'k_points','cell_parameters','climbing_images','constraints',
-                'collective_vars','occupations', 'hubbard')
+    sections = (
+        "control",
+        "system",
+        "electrons",
+        "ions",
+        "cell",
+        "fcp",
+        "rism",
+        )
+    cards = (
+        'atomic_species',
+        'atomic_positions',
+        'k_points',
+        # 'additional_k_points', # TODO: Add support
+        'cell_parameters',
+        'constraints',
+        'occupations',
+        # 'atomic_velocities', # TODO: Add support
+        'atomic_forces',
+        'solvents',
+        'hubbard',
+        )
 
     section_types = obj(
         control   = control  ,     
@@ -1963,9 +1668,7 @@ class PwscfInput(SimulationInput):
             #end if
         #end for
     #end def standardize_types
-
 #end class PwscfInput
-
 
 
 def generate_pwscf_input(selector,**kwargs):
@@ -2382,7 +2085,6 @@ def generate_any_pwscf_input(**kwargs):
 #end def generate_any_pwscf_input
 
 
-
 def generate_scf_input(*,
                        prefix       = 'pwscf',
                        outdir       = 'pwscf_output',
@@ -2610,8 +2312,6 @@ def generate_scf_input(*,
 #end def generate_scf_input
 
 
-
-
 def generate_nscf_input(**kwargs):
     pw = generate_scf_input(**kwargs)
     pw.control.update(
@@ -2619,8 +2319,6 @@ def generate_nscf_input(**kwargs):
         )
     return pw
 #end def generate_nscf_input
-
-
 
 
 def generate_relax_input(*,
@@ -2849,72 +2547,4 @@ def generate_vcrelax_input(
     # end if
 
     return pw
-# end def
-
-
-#def generate_nscf_input(prefix='pwscf',outdir='pwscf_output',ecut=200.,kpoints=None,weights=None,pseudos=None,system=None):
-#    if pseudos is None:
-#        pseudos = []
-#    #end if
-#    
-#    pseudopotentials = obj()
-#    atoms = []
-#    for ppname in pseudos:
-#        element = ppname[0:2]
-#        atoms.append(element)
-#        pseudopotentials[element] = ppname
-#    #end for
-#
-#    pw = PwscfInput()
-#    pw.control.update(
-#        calculation  = 'nscf',
-#        prefix       = prefix,
-#        restart_mode = 'from_scratch',
-#        tstress      = True,
-#        tprnfor      = True,
-#        pseudo_dir   = './',
-#        outdir       = outdir,
-#        disk_io      = 'low',
-#        wf_collect   = True
-#        )
-#    pw.system.update(
-#        ibrav       = 0,
-#        degauss     = 0.001,
-#        smearing    = 'mp',
-#        occupations = 'smearing',
-#        ecutwfc     = ecut,
-#        ecutrho     = 4*ecut
-#        )
-#    pw.electrons.update(
-#        conv_thr    = 1.e-10,
-#        mixing_beta = 0.7
-#        )
-#    pw.atomic_species.update(
-#        atoms            = atoms,
-#        pseudopotentials = pseudopotentials
-#        )
-#
-#    if system is not None:
-#        pw.incorporate_system(system)
-#    #end if
-#
-#    overwrite_kpoints = kpoints is not None or system==None
-#    if kpoints==None:
-#        kpoints = np.array([[0.,0,0]])
-#    else:
-#        kpoints = np.array(kpoints)
-#    #end if
-#    if weights==None:
-#        weights = np.ones((len(kpoints),),dtype=float)
-#    #end if
-#    if overwrite_kpoints:
-#        pw.k_points.clear()
-#        pw.k_points.update(
-#            specifier = 'tpiba',
-#            kpoints   = kpoints,
-#            weights   = weights
-#            )
-#    #end if
-#
-#    return pw
-##end def generate_nscf_input
+# end def generate_vcrelax_input

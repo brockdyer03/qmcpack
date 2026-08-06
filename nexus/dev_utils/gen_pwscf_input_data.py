@@ -59,7 +59,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeAlias
 
-
 if sys.version_info[0:3] < (3, 10, 0):
     msg = "This script must be run with Python 3.10.0 or greater!\n"
     raise RuntimeError(msg)
@@ -207,6 +206,7 @@ class NamelistParamDefinition:
     # This is meant to represent parameters that depend on another parameter
     # already being set. Currently this isn't handled because it's a bit more
     # complicated than expected, and it can vary wildly from version to version.
+
     # dependencies: tuple[NamelistParamDefinition] | None = None
 # end class NamelistParamDefinition
 
@@ -595,13 +595,19 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
             "v_removed\n"
         )
         for name, param_def in param_dict.items():
+            name = name.lower()
             # Handle formatting for the case that the removed version isn't the latest.
             if param_def.version_added == EARLIEST:
                 param_def.version_added = None
             else:
                 param_def.version_added = f"'{param_def.version_added!s}'"
 
-            if param_def.version_removed != LATEST:
+            if param_def.version_removed == LATEST:
+                param_def.version_removed = None
+            else:
+                param_def.version_removed = f"'{param_def.version_removed!s}'"
+
+            if param_def.version_removed is not None or param_def.version_added is not None:
                 namelist_string += (
                     f"{name:<{name_max}} = "
                     f"{f'{param_def.datatype},':<7}"
@@ -609,16 +615,7 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
                     f"{param_def.shape}, "
                     f"{param_def.allowed_values}, "
                     f"{param_def.version_added}, "
-                    f"'{param_def.version_removed!s}'\n"
-                )
-            elif param_def.version_added is not None:
-                namelist_string += (
-                    f"{name:<{name_max}} = "
-                    f"{f'{param_def.datatype},':<7}"
-                    f"{f'{param_def.required!s},':<7}"
-                    f"{param_def.shape}, "
-                    f"{param_def.allowed_values}, "
-                    f"{param_def.version_added}\n"
+                    f"{param_def.version_removed}\n"
                 )
             elif param_def.allowed_values is not None:
                 namelist_string += (
@@ -704,26 +701,26 @@ The supported QE versions are v{EARLIEST!s} - v{LATEST!s}
 """
 
 from __future__ import annotations
-from collections.abc import Sequence
+
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 
-PwscfInputType: TypeAlias = str | bool | int | float | Sequence
-# For structured array inputs (k-points, weights, reciprocal lattice, etc.)
-PwscfArrayInput: TypeAlias = Sequence[float | Sequence[float]]
+"""Union of all types accepted by ``PwscfInput``."""
+PwscfInputType: TypeAlias = str | bool | int | float | Sequence | Mapping
 
 
 @dataclass(frozen=True) # We generally don't want any of these to be modified
 class NamelistParamDefinition:
     """Base class for all namelist variables."""
 
-    datatype:        tuple[PwscfInputType]
+    datatype:        type[PwscfInputType]
     required:        bool
     shape:           tuple | None = None
     allowed_values:  tuple[PwscfInputType] | None = None
-    version_added:   tuple[float] | None = None
-    version_removed: tuple[float] | None = None
+    version_added:   str | None = None
+    version_removed: str | None = None
 #end class NamelistDefinition
 
 
@@ -734,21 +731,35 @@ class NamelistEnumBase(Enum):
     """
     def __new__(
         cls,
-        datatype:        PwscfInputType,
+        datatype:        type[PwscfInputType],
         required:        bool,  # noqa: FBT001
+        shape:           tuple | None = None,
         allowed_values:  tuple[PwscfInputType] | None = None,
-        version_added:   tuple[float] | None = None,
-        version_removed: tuple[float] | None = None,
+        version_added:   str | None = None,
+        version_removed: str | None = None,
     ):
         definition = NamelistParamDefinition.__new__(cls)
         definition._value_ = NamelistParamDefinition(
             datatype,
             required,
+            shape,
             allowed_values,
             version_added,
             version_removed,
         )
         return definition
+    #end def __new__
+
+    @classmethod
+    def _missing_(cls, value):
+        """Strip leading/trailing whitespace, underscores, and make lowercase."""
+        val = value.strip().strip("_").lower()
+        if val in cls.__members__:
+            return cls.__members__[val]
+        else:
+            msg = f"Input parameter is not in the enum {{cls.__name__}}"
+            raise ValueError(msg)
+    #end def _missing_
 #end class NamelistEnumBase
 
 
