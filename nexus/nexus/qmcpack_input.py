@@ -145,6 +145,7 @@ from .xmlreader import XMLreader, XMLelement
 from .developer import DevBase, dotdict, obj, error, log, warn
 from .generic import sorted_generic
 from .periodic_table import Elements
+from .pseudopotential import PseudoSet
 from .structure import Structure, Jellium, get_kpath
 from .physical_system import PhysicalSystem
 from .simulation import SimulationInput, SimulationInputTemplate
@@ -6735,7 +6736,7 @@ def generate_hamiltonian(name         = 'h0',
                 if ppfiles is None or len(ppfiles)==0:
                     error('cannot generate hamiltonian\n  system is pseudized, but no pseudopotentials have been provided\n  please provide pseudopotential files via the pseudos keyword')
                 #end if
-                if isinstance(ppfiles,list):
+                if isinstance(ppfiles, list | set):
                     pplist = ppfiles
                     ppfiles = obj()
                     for pppath in pplist:
@@ -6750,7 +6751,6 @@ def generate_hamiltonian(name         = 'h0',
                         #end if
                         ppfiles[element] = pppath
                     #end for
-                #end if
                 pseudos = collection()
                 for ion in ions:
                     iselem, element = Elements.is_element(ion, return_element=True)

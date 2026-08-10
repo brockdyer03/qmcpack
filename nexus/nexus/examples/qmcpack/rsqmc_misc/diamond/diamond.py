@@ -1,18 +1,24 @@
 #! /usr/bin/env python3
+from pathlib import Path
 
-from nexus import settings,job,run_project
+from nexus import settings, job, run_project, PseudoSet
 from nexus import generate_physical_system
 from nexus import generate_pwscf
 from nexus import generate_pw2qmcpack
 from nexus import generate_qmcpack,vmc
 
+pseudo_dir = Path("../../pseudopotentials").resolve()
+
 settings(
-    pseudo_dir    = '../../pseudopotentials',
+    pseudo_dir    = pseudo_dir,
     status_only   = 0,
     generate_only = 0,
     sleep         = 3,
     machine       = 'ws16'
     )
+
+espresso_pseudos = PseudoSet.from_dir(pseudo_dir, code="espresso")
+qmcpack_pseudos = PseudoSet.from_dir(pseudo_dir, code="qmcpack")
 
 dia16 = generate_physical_system(
     units  = 'A',
@@ -27,20 +33,20 @@ dia16 = generate_physical_system(
     kshift = (0,0,0),
     C      = 4
     )
-              
+
 scf = generate_pwscf(
     identifier   = 'scf',
     path         = 'diamond/scf',
     job          = job(cores=16,app='pw.x'),
     input_type   = 'generic',
     calculation  = 'scf',
-    input_dft    = 'lda', 
-    ecutwfc      = 200,   
-    conv_thr     = 1e-8, 
+    input_dft    = 'lda',
+    ecutwfc      = 200,
+    conv_thr     = 1e-8,
     nosym        = True,
     wf_collect   = True,
     system       = dia16,
-    pseudos      = ['C.BFD.upf'], 
+    pseudos      = espresso_pseudos,
     )
 
 conv = generate_pw2qmcpack(
@@ -58,7 +64,7 @@ qmc = generate_qmcpack(
     job          = job(cores=16,threads=4,app='qmcpack'),
     input_type   = 'basic',
     system       = dia16,
-    pseudos      = ['C.BFD.xml'],
+    pseudos      = qmcpack_pseudos,
     jastrows     = [],
     calculations = [
         vmc(

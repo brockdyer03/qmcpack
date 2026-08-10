@@ -78,7 +78,7 @@ from .developer import DevBase, obj, error, unavailable
 from .structure import Structure, read_structure
 from .physical_system import PhysicalSystem
 from .machines import Job, Workstation, get_machine
-from .pseudopotential import ppset
+from .pseudopotential import PseudoSet
 from .nexus_base import NexusCore, nexus_core, dynamic_storage
 from .utilities import path_string
 
@@ -305,8 +305,8 @@ class Simulation(NexusCore):
             sim_kw = set(sim_kw)
         #end if
         kw       = set(kwargs.keys())
-        sim_kw   = kw & (Simulation.allowed_inputs | sim_kw)
-        inp_kw   = (kw - sim_kw) | (kw & overlapping_kw)    
+        sim_kw   = kw.intersection(Simulation.allowed_inputs.union(sim_kw))
+        inp_kw   = kw.difference(sim_kw).union(kw.intersection(overlapping_kw))    
         sim_args = obj()
         inp_args = obj()
         for k in sim_kw:
@@ -325,49 +325,57 @@ class Simulation(NexusCore):
         #end if
         if 'pseudos' in inp_args and inp_args.pseudos is not None:
             pseudos = inp_args.pseudos
-            # support ppset labels
-            if isinstance(pseudos,str):
+
+            if isinstance(pseudos, str | PseudoSet):
                 code = cls.code_name()
-                if not ppset.supports_code(code):
-                    error('ppset labeled pseudopotential groups are not supported for code "{0}"'.format(code))
-                #end if
+                if code == "pwscf":
+                    # PseudoSet uses `espresso` to avoid confusion with pyscf
+                    code = "espresso"
+
+                if code not in PseudoSet.known_codes:
+                    error(f'PseudoSet does not support code "{code}"')
+
+                if isinstance(pseudos, str):
+                    pseudoset = PseudoSet.labeled_pseudos[pseudos][code]
+                else:
+                    pseudoset = pseudos
+
                 if 'system' not in inp_args:
                     error('system must be provided when using a ppset label')
-                #end if
+
                 system = inp_args.system
-                pseudos = ppset.get(pseudos,code,system)
+                pseudos = set()
+                for psp in pseudoset.get_pseudos(system, code):
+                    if psp.exists():
+                        pseudos.add(psp.name)
+                    else:
+                        error(f"Pseudopotential file {psp} can not be found")
+
+
                 if 'pseudos' in sim_args:
                     sim_args.pseudos = pseudos
-                #end if
+
                 inp_args.pseudos = pseudos
-            #end if
-            if copy_pseudos:
-                if 'files' in sim_args:
-                    sim_args.files = list(sim_args.files)
-                else:
-                    sim_args.files = list()
-                #end if
-                sim_args.files.extend(list(pseudos))
-            #end if
-            if 'system' in inp_args:
+            elif 'system' in inp_args: # User used PseudoSet, this is skipped.
                 system = inp_args.system
                 species_labels,species = system.structure.species(symbol=True)
                 pseudopotentials = nexus_core.pseudopotentials
                 for ppfile in pseudos:
                     if ppfile not in pseudopotentials:
                         error('pseudopotential file {0} cannot be found'.format(ppfile))
-                    #end if
+
                     pp = pseudopotentials[ppfile]
                     if pp.element_label not in species_labels and pp.element not in species:
                         error('the element {0} for pseudopotential file {1} is not in the physical system provided'.format(pp.element,ppfile))
-                    #end if
-                #end for
-            #end if
-        #end if
-        # this is already done in Simulation.__init__()
-        #if 'system' in inp_args and isinstance(inp_args.system,PhysicalSystem):
-        #    inp_args.system = inp_args.system.copy()
-        ##end if
+
+            if copy_pseudos:
+                if 'files' in sim_args:
+                    sim_args.files = list(sim_args.files)
+                else:
+                    sim_args.files = list()
+
+                sim_args.files.extend(list(pseudos))
+
         return sim_args,inp_args
     #end def separate_inputs
 

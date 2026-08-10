@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Literal
 from . import isolate_nexus_core, TEST_DIR
 from ..testing import value_eq,object_eq
-from nexus.pseudopotential import read_upf_z_valence, read_qmcpack_xml_z_valence, read_potcar_z_valence
-from nexus.pseudopotential import PseudoSet, ppset
-from nexus.nexus_base import nexus_core
-from nexus.physical_system import generate_physical_system
+from ..pseudopotential import read_upf_z_valence, read_qmcpack_xml_z_valence, read_potcar_z_valence
+from ..pseudopotential import PseudoSet, ppset
+from ..nexus_base import nexus_core
+from ..physical_system import generate_physical_system
+from ..pseudopotential import Pseudopotentials, PseudoFile, gamessPPFile
 
 
 TEST_FILES = {
@@ -129,16 +130,11 @@ def test_pp_elem_label():
         assert(label==reflabel)
         assert(symbol==refsymbol)
     #end for
-
 #end def test_pp_elem_label
 
 
 @isolate_nexus_core
 def test_pseudopotentials():
-    from ..pseudopotential import Pseudopotentials
-    from ..pseudopotential import PseudoFile
-    from ..pseudopotential import gamessPPFile
-
     # empty initialization
     Pseudopotentials()
     PseudoFile()
@@ -228,46 +224,7 @@ h 1 1.00
     pp = pps['C.BFD.gms']
     assert(pp.basis_text==basis_ref)
     assert(pp.pp_text==pp_ref)
-
 #end def test_pseudopotentials
-
-
-@isolate_nexus_core
-def test_ppset():
-    from ..developer import obj, to_obj
-
-    ppset_ref = obj(
-        pseudos = obj(
-            bfd = obj(
-                gamess  = obj(C='C.BFD.gms'),
-                pwscf   = obj(C='C.BFD.upf'),
-                qmcpack = obj(C='C.BFD.xml'),
-                ),
-            ),
-        )
-
-    ppset(
-        label   = 'bfd',
-        gamess  = ['C.BFD.gms'],
-        pwscf   = ['C.BFD.upf'],
-        qmcpack = ['C.BFD.xml'],
-        )
-
-    o = to_obj(ppset)
-    assert(object_eq(o,ppset_ref))
-
-    assert(ppset.supports_code('pwscf'))
-    assert(ppset.supports_code('gamess'))
-    assert(ppset.supports_code('vasp'))
-    assert(ppset.supports_code('qmcpack'))
-
-    assert(ppset.has_set('bfd'))
-
-
-    # need to add test for get() method
-    #   depends on PhysicalSystem
-#end def test_ppset
-
 
 
 def test_pseudopotential_classes(tmp_path):
@@ -504,7 +461,6 @@ r*potential (L=1) in Ha
 
     qpp_casino = QmcpackPP(qmcpack_from_casino_file)
     assert(object_eq(qpp_casino,qpp,int_as_float=True,atol=1e-12))
-
 #end def test_pseudopotential_classes
 
 
@@ -2196,8 +2152,6 @@ def test_register_legacy_ppset(tmp_path):
         qmcpack = ["C.BFD.xml", "H.BFD.xml", "O.BFD.xml"],
         gamess  = ["C.BFD.gms", "H.BFD.gms", "O.BFD.gms"],
         )
-
-    PseudoSet._register_legacy_ppset("bfd")
 
     assert(PseudoSet.labeled_pseudos.keys() == ref_pseudos.keys())
 
