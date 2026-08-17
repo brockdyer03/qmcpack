@@ -49,6 +49,7 @@ import sys
 import inspect
 from copy import deepcopy
 from types import MappingProxyType
+from pathlib import Path
 import numpy as np
 from numpy import pi
 from numpy.linalg import inv
@@ -2169,12 +2170,22 @@ def generate_any_pwscf_input(**kwargs):
     pseudopotentials = obj()
     atom_species = []
     if system is not None:
-        pseudos = PseudoSet.pseudo_remap('pwscf',pseudos,system)
-    for ppname in pseudos:
+        pseudos = PseudoSet.get_pseudos(
+            pseudos = pseudos,
+            system  = system,
+            code    = 'espresso',
+            )
+
+    if isinstance(pseudos, dict):
+        pplist = pseudos.values()
+    else:
+        pplist = pseudos
+
+    for pp in pplist:
         #element = ppname[0:2].strip('.')
-        label,element = pp_elem_label(ppname,guard=True)
+        label,element = pp_elem_label(pp, guard=True)
         atom_species.append(element)
-        pseudopotentials[element] = ppname
+        pseudopotentials[element] = pp if not isinstance(pp, Path) else pp.name
     #end for
     pw.atomic_species.update(
         atoms            = list(sorted(atom_species)),
@@ -2428,7 +2439,11 @@ def generate_scf_input(prefix       = 'pwscf',
         pseudos = []
     #end if
     if system is not None:
-        pseudos = PseudoSet.pseudo_remap('pwscf',pseudos,system)
+        pseudos = PseudoSet.get_pseudos(
+            pseudos = pseudos,
+            system  = system,
+            code    = 'espresso',
+            )
     #end if
     pseudopotentials = obj()
     atoms = []
@@ -2665,7 +2680,11 @@ def generate_relax_input(prefix       = 'pwscf',
         pseudos = []
     #end if
     if system is not None:
-        pseudos = PseudoSet.pseudo_remap('pwscf',pseudos,system)
+        pseudos = PseudoSet.get_pseudos(
+            pseudos = pseudos,
+            system  = system,
+            code    = 'espresso',
+            )
     #end if
     
     pseudopotentials = obj()

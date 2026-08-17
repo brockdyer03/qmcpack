@@ -3389,13 +3389,17 @@ def generate_any_rmg_input(**kwargs):
 
     # incorporate pseudopotentials details provided via "pseudos"
     if pseudos is not None:
-        pseudos = PseudoSet.pseudo_remap('rmg',pseudos,system)
+        pseudos = PseudoSet.get_pseudos(
+            pseudos = pseudos,
+            system  = system,
+            code    = 'rmg',
+            )
         species = []
         pps     = []
-        for ppname in pseudos:
-            label,element = pp_elem_label(ppname,guard=True)
+        for pp in pseudos.values():
+            label,element = pp_elem_label(pp.name,guard=True)
             species.append(element)
-            pps.append(ppname)
+            pps.append(pp.name)
         #end for
         ri.pseudopotential = obj(
             species = np.array(species),

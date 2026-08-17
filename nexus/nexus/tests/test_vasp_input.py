@@ -175,6 +175,7 @@ def test_generate(tmp_path):
     from ..nexus_base import nexus_noncore
     from ..physical_system import generate_physical_system
     from ..vasp_input import generate_vasp_input,VaspInput
+    from ..pseudopotential import PseudoSet
 
     pseudo_dir = tmp_path / 'pseudopotentials'
     pseudo_dir.mkdir()
@@ -183,13 +184,9 @@ def test_generate(tmp_path):
     nexus_core.remote_directory = str(tmp_path)
     nexus_core.file_locations = nexus_core.file_locations + [str(tmp_path)]
     nexus_noncore.pseudo_dir = pseudo_dir
+    PseudoSet.global_pseudo_dir = pseudo_dir
 
     (pseudo_dir / 'C.POTCAR').write_text(c_potcar_text)
-    from ..pseudopotential import PseudoSet
-    PseudoSet.pseudo_files = {
-        'C.POTCAR':str((pseudo_dir/'C.POTCAR').resolve())
-        }
-
 
     dia16 = generate_physical_system(
         structure = TEST_FILES['d16bulk.POSCAR'],

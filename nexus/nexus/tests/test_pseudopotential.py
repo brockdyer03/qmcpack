@@ -60,15 +60,15 @@ def setup_psps(
             )
     elif isinstance(file_ext, tuple):
         pseudo_names = (
-            f"C.BFD.{file_ext[0]}",
-            f"H.BFD.{file_ext[1]}",
-            f"O.BFD.{file_ext[-1]}",
+            f"C.BFD{file_ext[0]}",
+            f"H.BFD{file_ext[1]}",
+            f"O.BFD{file_ext[-1]}",
             )
     else:
         pseudo_names = (
-            f"C.BFD.{file_ext}",
-            f"H.BFD.{file_ext}",
-            f"O.BFD.{file_ext}",
+            f"C.BFD{file_ext}",
+            f"H.BFD{file_ext}",
+            f"O.BFD{file_ext}",
             )
 
     psp_dir = test_dir / f"{code}_pseudos"
@@ -95,18 +95,19 @@ def setup_psps(
             }
     elif isinstance(file_ext, tuple):
         ref_pseudos = {
-            "C": (psp_dir / f"C.BFD.{file_ext[0]}").resolve(),
-            "H": (psp_dir / f"H.BFD.{file_ext[1]}").resolve(),
-            "O": (psp_dir / f"O.BFD.{file_ext[-1]}").resolve(),
+            "C": (psp_dir / f"C.BFD{file_ext[0]}").resolve(),
+            "H": (psp_dir / f"H.BFD{file_ext[1]}").resolve(),
+            "O": (psp_dir / f"O.BFD{file_ext[-1]}").resolve(),
             }
     else:
         ref_pseudos = {
-            "C": (psp_dir / f"C.BFD.{file_ext}").resolve(),
-            "H": (psp_dir / f"H.BFD.{file_ext}").resolve(),
-            "O": (psp_dir / f"O.BFD.{file_ext}").resolve(),
+            "C": (psp_dir / f"C.BFD{file_ext}").resolve(),
+            "H": (psp_dir / f"H.BFD{file_ext}").resolve(),
+            "O": (psp_dir / f"O.BFD{file_ext}").resolve(),
             }
 
     return (psp_dir, pseudo_list, ref_pseudos)
+#end def setup_psps
 
 
 def test_pp_elem_label():
@@ -129,11 +130,7 @@ def test_pp_elem_label():
         assert(label==reflabel)
         assert(symbol==refsymbol)
     #end for
-
 #end def test_pp_elem_label
-
-
-
 
 
 def test_pseudopotential_classes(tmp_path):
@@ -370,7 +367,6 @@ r*potential (L=1) in Ha
 
     qpp_casino = QmcpackPP(qmcpack_from_casino_file)
     assert(object_eq(qpp_casino,qpp,int_as_float=True,atol=1e-12))
-
 #end def test_pseudopotential_classes
 
 
@@ -797,7 +793,7 @@ def test_pseudoset_list(tmp_path):
 
     qmcpack_pseudoset = PseudoSet(
         pseudos = qmcpack_pseudo_list,
-        codes    = "qmcpack",
+        codes   = "qmcpack",
         )
 
     assert(qmcpack_pseudoset.pseudos     == ref_qmcpack_pseudos)
@@ -806,7 +802,7 @@ def test_pseudoset_list(tmp_path):
 
     espresso_pseudoset = PseudoSet(
         pseudos = espresso_pseudo_list,
-        codes    = "espresso",
+        codes   = "espresso",
         )
 
     assert(espresso_pseudoset.pseudos     == ref_espresso_pseudos)
@@ -815,7 +811,7 @@ def test_pseudoset_list(tmp_path):
 
     gamess_pseudoset = PseudoSet(
         pseudos = gamess_pseudo_list,
-        codes    = "gamess",
+        codes   = "gamess",
         )
 
     assert(gamess_pseudoset.pseudos     == ref_gamess_pseudos)
@@ -824,7 +820,7 @@ def test_pseudoset_list(tmp_path):
 
     vasp_pseudoset = PseudoSet(
         pseudos = vasp_pseudo_list,
-        codes    = "vasp",
+        codes   = "vasp",
         )
 
     assert(vasp_pseudoset.pseudos     == ref_vasp_pseudos)
@@ -833,7 +829,7 @@ def test_pseudoset_list(tmp_path):
 
     rmg_pseudoset = PseudoSet(
         pseudos = rmg_pseudo_list,
-        codes    = "rmg",
+        codes   = "rmg",
         )
 
     assert(rmg_pseudoset.pseudos     == ref_rmg_pseudos)
@@ -1367,13 +1363,13 @@ def test_pseudoset_from_mixed_dir(tmp_path):
     qmcpack_calc = pseudoset["qmcpack"]
     qmcpack_ref = ref_pseudos["qmcpack"]
     assert(qmcpack_calc.pseudos     == qmcpack_ref.pseudos)
-    assert(qmcpack_calc.codes        == qmcpack_ref.codes)
+    assert(qmcpack_calc.codes       == qmcpack_ref.codes)
     assert(qmcpack_calc.pseudo_dirs == qmcpack_ref.pseudo_dirs)
 
     espresso_calc = pseudoset["espresso"]
     espresso_ref = ref_pseudos["espresso"]
     assert(espresso_calc.pseudos     == espresso_ref.pseudos)
-    assert(espresso_calc.codes        == espresso_ref.codes)
+    assert(espresso_calc.codes       == espresso_ref.codes)
     assert(espresso_calc.pseudo_dirs == espresso_ref.pseudo_dirs)
 
     pseudoset = PseudoSet.from_mixed_dir(
@@ -1910,15 +1906,117 @@ def test_pseudoset_from_mixed_dir_mismatches(tmp_path):
 #end def test_pseudoset_from_mixed_dir_mismatches
 
 
+@isolate_nexus_core
+def test_register_labeled_ppset(tmp_path):
+    pseudo_names = (
+        "C.BFD.xml",
+        "H.BFD.xml",
+        "O.BFD.xml",
+        "C.BFD.upf",
+        "H.BFD.upf",
+        "O.BFD.upf",
+        "C.BFD.gms",
+        "H.BFD.gms",
+        "O.BFD.gms",
+        )
+
+    psp_dir = tmp_path / "mixed_pseudos"
+    psp_dir.mkdir()
+    assert psp_dir.exists(), "Failed to create pseudo directory!"
+
+    pseudo_list = []
+    for psp in pseudo_names:
+        pseudo = (psp_dir / psp).resolve()
+        pseudo.touch()
+        assert pseudo.exists(), "Failed to create pseudo file!"
+        pseudo_list.append(pseudo)
+
+    ref_pseudos = {
+        "bfd": {
+            "qmcpack": PseudoSet(
+                pseudos = {
+                    "C": (psp_dir / "C.BFD.xml").resolve(),
+                    "H": (psp_dir / "H.BFD.xml").resolve(),
+                    "O": (psp_dir / "O.BFD.xml").resolve(),
+                    },
+                ),
+            "espresso": PseudoSet(
+                pseudos = {
+                    "C" : (psp_dir / "C.BFD.upf").resolve(),
+                    "H" : (psp_dir / "H.BFD.upf").resolve(),
+                    "O" : (psp_dir / "O.BFD.upf").resolve(),
+                    },
+                ),
+            "gamess": PseudoSet(
+                pseudos = {
+                    "C": (psp_dir / "C.BFD.gms").resolve(),
+                    "H": (psp_dir / "H.BFD.gms").resolve(),
+                    "O": (psp_dir / "O.BFD.gms").resolve(),
+                    },
+                ),
+            }
+        }
+
+    PseudoSet.global_pseudo_dir = psp_dir
+
+    ppset(
+        label    = 'bfd',
+        espresso = ["C.BFD.upf", "H.BFD.upf", "O.BFD.upf"],
+        qmcpack  = ["C.BFD.xml", "H.BFD.xml", "O.BFD.xml"],
+        gamess   = ["C.BFD.gms", "H.BFD.gms", "O.BFD.gms"],
+        )
+
+    assert(set(PseudoSet.labeled_pseudosets) == set(ref_pseudos))
+    assert(set(PseudoSet.labeled_pseudosets['bfd']) == set(ref_pseudos['bfd']))
+
+    for code, ref_pseudoset in ref_pseudos['bfd'].items():
+        pseudoset = PseudoSet.labeled_pseudosets['bfd'][code]
+        assert(pseudoset.pseudos     == ref_pseudoset.pseudos)
+        assert(pseudoset.codes       == ref_pseudoset.codes)
+        assert(pseudoset.pseudo_dirs == ref_pseudoset.pseudo_dirs)
+    #end for
+
+    with pytest.raises(
+        ValueError,
+        match="Pseudopotential set label 'bfd' is already registered",
+        ):
+        ppset(label='bfd',qmcpack=['C.BFD.xml','H.BFD.xml','O.BFD.xml'])
+
+    with pytest.raises(
+        FileNotFoundError,
+        match='Some pseudopotential files do not exist:\n  - Ne.missing.xml',
+        ):
+        ppset(label='missing',qmcpack=['Ne.missing.xml'])
+
+    with pytest.raises(
+        ValueError,
+        match="Pseudopotential files provided for code 'gamess' are not compatible with that code!",
+        ):
+        ppset(label='incompatible',gamess=['C.BFD.xml','H.BFD.xml','O.BFD.xml'])
+
+    ppset(
+        label    = 'shared_upf',
+        espresso = ['C.BFD.upf','H.BFD.upf','O.BFD.upf'],
+        rmg      = ['C.BFD.upf','H.BFD.upf','O.BFD.upf'],
+        )
+    shared = PseudoSet.labeled_pseudosets['shared_upf']
+    assert set(shared) == {'espresso','rmg'}
+    assert shared['espresso'] is not shared['rmg']
+#end def test_register_legacy_ppset
+
+
+@isolate_nexus_core
 def test_get_pseudos(tmp_path):
-    qmcpack_dir, _, ref_qmcpack_pseudos = setup_psps(test_dir=tmp_path, code="qmcpack")
+    qmcpack_dir, _, ref_qmcpack_pseudos   = setup_psps(test_dir=tmp_path, code="qmcpack")
     qmcpack_pseudoset = PseudoSet.from_dir(pseudo_dir=qmcpack_dir, code ="detect")
-    ref_pseudos = {ref_qmcpack_pseudos["C"], ref_qmcpack_pseudos["H"]}
+    ref_pseudos = {
+        "C": ref_qmcpack_pseudos["C"],
+        "H": ref_qmcpack_pseudos["H"]
+        }
 
     elements = ["C", "C", "H"]
 
     pseudos = qmcpack_pseudoset.get_pseudos(system=elements, code="qmcpack")
-
     assert(pseudos == ref_pseudos)
 
     system = generate_physical_system(
@@ -1929,13 +2027,38 @@ def test_get_pseudos(tmp_path):
         )
 
     pseudos = qmcpack_pseudoset.get_pseudos(system=system, code="qmcpack")
+    assert(pseudos == ref_pseudos)
 
+    PseudoSet.global_pseudo_dir = qmcpack_dir
+    ppset(
+        label   = "bfd",
+        qmcpack = [*ref_qmcpack_pseudos.values()],
+        )
+
+    pseudos = PseudoSet.get_pseudos(pseudos="bfd", system=elements, code="qmcpack")
+    assert(pseudos == ref_pseudos)
+
+    pseudos = PseudoSet.get_pseudos(pseudos="bfd", system=system, code="qmcpack")
+    assert(pseudos == ref_pseudos)
+
+    pseudos = PseudoSet.get_pseudos(
+        pseudos=["C.BFD.xml", "H.BFD.xml"],
+        system=elements,
+        code="qmcpack"
+        )
+    assert(pseudos == ref_pseudos)
+
+    pseudos = PseudoSet.get_pseudos(
+        pseudos=["C.BFD.xml", "H.BFD.xml"],
+        system=system,
+        code="qmcpack"
+        )
     assert(pseudos == ref_pseudos)
 
     with pytest.raises(ValueError, match="Tried to get pseudopotentials for"):
         qmcpack_pseudoset.get_pseudos(system=elements, code="espresso")
 
-    with pytest.raises(ValueError, match="No pseudopotential found for label"):
+    with pytest.raises(ValueError, match="Pseudopotentials missing for the following elements:\n  - 'Fe'\n"):
         qmcpack_pseudoset.get_pseudos(system=["C", "H", "Fe"], code="qmcpack")
 #end def test_get_pseudos
 
@@ -2000,147 +2123,6 @@ def test_get_Zeff():
 #end def test_get_Zeff
 
 
-@isolate_nexus_core
-def test_register_legacy_ppset(tmp_path):
-    pseudo_names = (
-        "C.BFD.xml",
-        "H.BFD.xml",
-        "O.BFD.xml",
-        "C.BFD.upf",
-        "H.BFD.upf",
-        "O.BFD.upf",
-        "C.BFD.gms",
-        "H.BFD.gms",
-        "O.BFD.gms",
-        )
-
-    psp_dir = tmp_path / "mixed_pseudos"
-    psp_dir.mkdir()
-    assert psp_dir.exists(), "Failed to create pseudo directory!"
-
-    nexus_core.file_locations += [str(psp_dir)]
-
-    pseudo_list = []
-    for psp in pseudo_names:
-        pseudo = (psp_dir / psp).resolve()
-        pseudo.touch()
-        assert pseudo.exists(), "Failed to create pseudo file!"
-        pseudo_list.append(pseudo)
-
-    pseudo_files = PseudoSet.pseudo_files
-    labeled_pseudosets = PseudoSet.labeled_pseudosets
-    PseudoSet.pseudo_files = {
-        pseudo.name:str(pseudo) for pseudo in pseudo_list
-        }
-    PseudoSet.labeled_pseudosets = {}
-
-    ref_pseudos = {
-        "bfd": {
-            "qmcpack": PseudoSet(
-                pseudos = {
-                    "C": (psp_dir / "C.BFD.xml").resolve(),
-                    "H": (psp_dir / "H.BFD.xml").resolve(),
-                    "O": (psp_dir / "O.BFD.xml").resolve(),
-                    },
-                ),
-            "espresso": PseudoSet(
-                pseudos = {
-                    "C" : (psp_dir / "C.BFD.upf").resolve(),
-                    "H" : (psp_dir / "H.BFD.upf").resolve(),
-                    "O" : (psp_dir / "O.BFD.upf").resolve(),
-                    },
-                ),
-            "gamess": PseudoSet(
-                pseudos = {
-                    "C": (psp_dir / "C.BFD.gms").resolve(),
-                    "H": (psp_dir / "H.BFD.gms").resolve(),
-                    "O": (psp_dir / "O.BFD.gms").resolve(),
-                    },
-                ),
-            }
-        }
-
-    ppset(
-        label   = 'bfd',
-        pwscf   = ["C.BFD.upf", "H.BFD.upf", "O.BFD.upf"],
-        qmcpack = ["C.BFD.xml", "H.BFD.xml", "O.BFD.xml"],
-        gamess  = ["C.BFD.gms", "H.BFD.gms", "O.BFD.gms"],
-        )
-
-    assert set(PseudoSet.labeled_pseudosets) == {'bfd'}
-    assert set(PseudoSet.labeled_pseudosets['bfd']) == {
-        'espresso','gamess','qmcpack'
-        }
-
-    for code,ref_pseudoset in ref_pseudos['bfd'].items():
-        pseudoset = PseudoSet.labeled_pseudosets['bfd'][code]
-        assert pseudoset.pseudos == ref_pseudoset.pseudos
-        assert pseudoset.codes == ref_pseudoset.codes
-        assert pseudoset.pseudo_dirs == ref_pseudoset.pseudo_dirs
-    #end for
-
-    system = generate_physical_system(
-        elem = ['O','C','H'],
-        pos  = np.empty((3,3),dtype=float),
-        C    = 4,
-        H    = 1,
-        O    = 6,
-        )
-    remapped = PseudoSet.pseudo_remap('qmcpack','bfd',system)
-    assert list(remapped) == ['C.BFD.xml','H.BFD.xml','O.BFD.xml']
-    assert remapped == {
-        filename:PseudoSet.pseudo_files[filename] for filename in remapped
-        }
-
-    explicit = ['O.BFD.xml','C.BFD.xml']
-    remapped = PseudoSet.pseudo_remap('qmcpack',explicit,system)
-    assert list(remapped) == explicit
-
-    with pytest.raises(NexusError,match='label "bfd" is already registered'):
-        ppset(label='bfd',qmcpack=['C.BFD.xml','H.BFD.xml','O.BFD.xml'])
-
-    with pytest.raises(NexusError,match='are not present in PseudoSet.pseudo_files'):
-        ppset(label='missing',qmcpack=['Ne.missing.xml'])
-
-    with pytest.raises(NexusError,match='same elements'):
-        ppset(
-            label   = 'unequal_elements',
-            pwscf   = ['C.BFD.upf','H.BFD.upf'],
-            qmcpack = ['C.BFD.xml','O.BFD.xml'],
-            )
-
-    with pytest.raises(NexusError,match='not compatible with that code'):
-        ppset(label='incompatible',gamess=['C.BFD.xml','H.BFD.xml','O.BFD.xml'])
-
-    with pytest.raises(NexusError,match='label "unknown" is not registered'):
-        PseudoSet.pseudo_remap('qmcpack','unknown',system)
-
-    with pytest.raises(NexusError,match='are not present in PseudoSet.pseudo_files'):
-        PseudoSet.pseudo_remap('qmcpack',['Ne.missing.xml'],system)
-
-    missing_species = generate_physical_system(
-        elem = ['C','N'],
-        pos  = np.empty((2,3),dtype=float),
-        C    = 4,
-        N    = 5,
-        )
-    with pytest.raises(NexusError,match=r"does not contain species \['N'\]"):
-        PseudoSet.pseudo_remap('qmcpack','bfd',missing_species)
-
-    ppset(
-        label = 'shared_upf',
-        pwscf = ['C.BFD.upf','H.BFD.upf','O.BFD.upf'],
-        rmg   = ['C.BFD.upf','H.BFD.upf','O.BFD.upf'],
-        )
-    shared = PseudoSet.labeled_pseudosets['shared_upf']
-    assert set(shared) == {'espresso','rmg'}
-    assert shared['espresso'] is not shared['rmg']
-
-    PseudoSet.pseudo_files = pseudo_files
-    PseudoSet.labeled_pseudosets = labeled_pseudosets
-#end def test_register_legacy_ppset
-
-
 def test_pseudoset_repr(tmp_path):
     qmcpack_dir,  _, ref_qmcpack_pseudos  = setup_psps(test_dir=tmp_path, code="qmcpack")
     pseudoset = PseudoSet(
@@ -2157,9 +2139,9 @@ def test_pseudoset_repr(tmp_path):
 PseudoSet(
     codes = {{'qmcpack'}},
     pseudos = {{
-        'C': PosixPath('{qmcpack_dir}/C.BFD..xml'),
-        'H': PosixPath('{qmcpack_dir}/H.BFD..xml'),
-        'O': PosixPath('{qmcpack_dir}/O.BFD..xml'),
+        'C': PosixPath('{qmcpack_dir}/C.BFD.xml'),
+        'H': PosixPath('{qmcpack_dir}/H.BFD.xml'),
+        'O': PosixPath('{qmcpack_dir}/O.BFD.xml'),
     }},
     Zeff_map = {{
         'H': 1,

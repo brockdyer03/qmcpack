@@ -24,6 +24,7 @@
 import os
 import sys
 from copy import deepcopy
+from pathlib import Path
 import importlib
 from importlib.metadata import PackageNotFoundError
 
@@ -625,15 +626,10 @@ class Settings(NexusCore):
             pseudo_dir = os.path.abspath(pseudo_dir)
             nexus_core.pseudo_dir = pseudo_dir
         #end if
-        PseudoSet.pseudo_files.clear()
+
         PseudoSet.labeled_pseudosets.clear()
         if pseudo_dir is not None:
-            for filename in os.listdir(pseudo_dir):
-                filepath = os.path.join(pseudo_dir,filename)
-                if os.path.isfile(filepath):
-                    PseudoSet.pseudo_files[filename] = os.path.realpath(filepath)
-                #end if
-            #end for
+            PseudoSet.global_pseudo_dir = Path(pseudo_dir).resolve()
         #end if
 
         # backwards compatibility with prior results_dir default

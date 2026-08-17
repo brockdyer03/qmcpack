@@ -337,10 +337,7 @@ def test_generate(tmp_path):
             src=pp,
             dst=pp_dir / file,
             )
-    PseudoSet.pseudo_files = {
-        file:str((pp_dir/file).resolve()) for file in ppfiles
-        }
-    PseudoSet.labeled_pseudosets = {}
+    PseudoSet.global_pseudo_dir = pp_dir
 
     input_files = ['rhf.inp','cisd.inp','cas.inp']
 

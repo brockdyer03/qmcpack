@@ -100,9 +100,8 @@ def test_settings(tmp_path):
         settings.command_line   = True
         nexus_core.command_line = True
         check_settings_core_noncore()
-        # nexus core sets basic run stages and PseudoSet registries are empty
+        # nexus core sets basic run stages and PseudoSet registry is empty
         assert(nexus_core.stages_set==set(nexus_core_defaults.primary_modes))
-        assert(len(PseudoSet.pseudo_files)==0)
         assert(len(PseudoSet.labeled_pseudosets)==0)
         nexus_core.stages_set       = set()
         nexus_core.stages           = []
@@ -156,9 +155,6 @@ def test_settings(tmp_path):
     assert(nexus_core.generate_only==1)
     pseudo_path = str((tmp_path / 'pseudopotentials').resolve())
     assert(nexus_core.pseudo_dir==pseudo_path)
-    assert(PseudoSet.pseudo_files=={
-        pseudo:str((Path(pseudo_path)/pseudo).resolve()) for pseudo in pseudos
-        })
     assert(len(PseudoSet.labeled_pseudosets)==0)
     assert(settings.machine=='ws16')
     assert(Job.machine=='ws16')

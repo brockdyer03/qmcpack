@@ -1208,7 +1208,11 @@ def generate_any_gamess_input(**kwargs):
                 coord = 'unique',
                 ecp   = 'read'
                 )
-            pseudo_files = PseudoSet.pseudo_remap('gamess',pskw.pseudos,system)
+            pseudo_files = PseudoSet.get_pseudos(
+                pseudos = pskw.pseudos,
+                system  = system,
+                code    = 'gamess',
+                )
             pps = _read_gamess_pseudopotentials(pseudo_files.values())
             for i,a in enumerate(elem):
                 Z = Elements(a).atomic_number
