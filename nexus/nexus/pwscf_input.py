@@ -2165,7 +2165,7 @@ def generate_any_pwscf_input(**kwargs):
     #end if
     hubbard_input  = kwargs.pop('hubbard', None)
     hubbard_option = kwargs.pop('hubbard_proj',None)
-    
+
     #  pseudopotentials
     pseudopotentials = obj()
     atom_species = []
@@ -2447,10 +2447,10 @@ def generate_scf_input(prefix       = 'pwscf',
     #end if
     pseudopotentials = obj()
     atoms = []
-    for ppname in pseudos:
-        element = ppname[0:2].strip('.')
-        atoms.append(element)
-        pseudopotentials[element] = ppname
+    if len(pseudos) > 0:
+        for elem, pp in pseudos.items():
+            atoms.append(elem)
+            pseudopotentials[elem] = pp.name
     #end for
 
     if ecutrho is None:
@@ -2689,11 +2689,11 @@ def generate_relax_input(prefix       = 'pwscf',
     
     pseudopotentials = obj()
     atoms = []
-    for ppname in pseudos:
-        element = ppname[0:2].strip('.')
-        atoms.append(element)
-        pseudopotentials[element] = ppname
-    #end for
+    if len(pseudos) > 0:
+        for elem, pp in pseudos.items():
+            atoms.append(elem)
+            pseudopotentials[elem] = pp.name
+        #end for
 
     if ecutrho is None:
         ecutrho = 4*ecut

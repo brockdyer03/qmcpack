@@ -352,13 +352,13 @@ class PseudoSet(DevBase):
     def __init__(
         self,
         pseudos     : Iterable[PathLike] | Mapping[Elements | str, PathLike],
-        codes       : str | Iterable[str] = "detect",
+        codes       : str | Iterable[str] | None = "detect",
         Zeff_map    : Mapping[PathLike, int] | None = None,
         *,
         skip_invalid: bool = False,
         ):
         self.pseudos: dict[str, Path] = {}
-        if isinstance(pseudos, Mapping | obj):
+        if isinstance(pseudos, Mapping):
             for label, psp in pseudos.items():
                 psp = Path(psp).resolve()
                 if not psp.exists():
@@ -416,23 +416,23 @@ class PseudoSet(DevBase):
                 else:
                     self.pseudos[symbol] = psp
 
-        if isinstance(codes, str):
-            if codes.lower() == "detect":
+        if codes is None or isinstance(codes, str):
+            if codes is None or codes.lower() == "detect":
                 self.codes = self._detect_pseudo_code(self.pseudos)
             else:
                 self.codes = {PseudoSet._check_code_str(codes)}
         elif isinstance(codes, Iterable):
             if not isinstance(next(iter(codes)), str):
                 msg = (
-                    "`codes` must be either 'detect', str, or an iterable of str, "
-                    "but is an iterable of `{type(next(iter(codes))).__name__}`"
+                    "`codes` must be either 'detect', str, an iterable of str, or None "
+                    f"but is an iterable of `{type(next(iter(codes))).__name__}`"
                     )
                 raise TypeError(msg)
             self.codes = set([
                 PseudoSet._check_code_str(code) for code in codes
                 ])
         else:
-            msg = f"`codes` must be either 'detect', str, or an iterable of str, but has type `{type(codes).__name__}`"
+            msg = f"`codes` must be either 'detect', str, an iterable of str, or None, but has type `{type(codes).__name__}`"
             raise TypeError(msg)
 
         self.Zeff_map = dict(Zeff_map) if Zeff_map is not None else {}
@@ -902,7 +902,7 @@ class PseudoSet(DevBase):
     #end def from_mixed_dir
 
     def get_pseudos(
-        pseudos: PseudoSet | str | list[str] | None,
+        pseudos: PseudoSet | str | list[str] | dict[str, Path] | None,
         system : PhysicalSystem | Iterable[str],
         code   : Literal["espresso", "gamess", "vasp", "qmcpack", "rmg", "pyscf"] | None = None,
         ) -> dict[str, Path] | None:
@@ -961,7 +961,16 @@ class PseudoSet(DevBase):
         """
         if pseudos is None:
             return {}
-        elif isinstance(pseudos, str):
+
+        if isinstance(pseudos, dict):
+            # Can happen when this function is called twice
+            # e.g. in the case of `generate_pwscf`.
+            # Best to double check in case of user-supplied `pseudos` being a dict
+            pseudos = PseudoSet(pseudos=pseudos, codes=code)
+            return pseudos.get_pseudos(system=system, code=code)
+
+
+        if isinstance(pseudos, str):
             if pseudos not in PseudoSet.labeled_pseudosets:
                 msg = f"Provided label '{pseudos}' is not registered with PseudoSet!"
                 raise ValueError(msg)
@@ -976,6 +985,7 @@ class PseudoSet(DevBase):
         elif isinstance(pseudos, list):
             if len(pseudos) == 0:
                 return {}
+
             checked_pseudos = []
             for psp in pseudos:
                 # If they provided a valid path, use it, otherwise check the global dir.
@@ -988,7 +998,7 @@ class PseudoSet(DevBase):
                     raise FileNotFoundError(msg)
                 #end if
             #end for
-            pseudos = PseudoSet(checked_pseudos)
+            pseudos = PseudoSet(checked_pseudos, codes=code)
 
         if not isinstance(pseudos, PseudoSet):
             msg = f"Must provide a PseudoSet, str, list of pseudos, or None, but got {type(pseudos).__name__}!"
