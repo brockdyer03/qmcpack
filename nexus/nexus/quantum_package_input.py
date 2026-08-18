@@ -29,9 +29,9 @@ bool_values = dict(T=True,F=False)
 bool_values_inv = {True:'T',False:'F'}
 
 def read_qp_value_type(value_filepath):
-    f = open(value_filepath,'r')
-    svalue = f.read().strip()
-    f.close()
+    with open(value_filepath,'r') as f:
+        svalue = f.read().strip()
+
     if svalue in bool_values:
         return 'bool'
     else:
@@ -51,9 +51,9 @@ def read_qp_value_type(value_filepath):
 
 
 def read_qp_value(value_filepath):
-    f = open(value_filepath,'r')
-    svalue = f.read().strip()
-    f.close()
+    with open(value_filepath,'r') as f:
+        svalue = f.read().strip()
+
     if svalue in bool_values:
         v = bool_values[svalue]
     else:
@@ -83,9 +83,9 @@ def write_qp_value(value_filepath,value):
     else:
         error('invalid type encountered on write\nattempted to write variable: {0}\nwith type: {1}\nvalid type options: bool,int,float,str'.format(value_filepath,value.__class__.__name__))
     #end if
-    f = open(value_filepath,'w')
-    f.write(svalue+'\n')
-    f.close()
+    with open(value_filepath,'w') as f:
+        f.write(svalue+'\n')
+
 #end def write_qp_value
 
 
@@ -241,7 +241,7 @@ def extract_input_specification(*ezfio_paths):
             error('cannot extract input spec from path\ninput path provided does not exist\ninput path provided: {0}'.format(epath),'Quantum Package')
         #end if
         log('  extracting from: {0}'.format(epath))
-        for path,dirs,files in os.walk(epath):
+        for path,dirs,files in os.walk(epath):  # noqa: B007
             for file in files:
                 if 'save' not in path and 'work' not in path:
                     if not file.startswith('.') and not file.endswith('.gz'):
@@ -388,7 +388,7 @@ class QuantumPackageInput(SimulationInput):
         elif not epath.endswith('.ezfio'):
             self.error('cannot read input\nprovided path does not end in an ezfio directory\ndirectory must end with .ezfio\npath provided:  {0}'.format(epath))
         #end if
-        for path,dirs,files in os.walk(epath):
+        for path,dirs,files in os.walk(epath):  # noqa: B007
             for file in files:
                 if 'save' not in path:
                     if not file.startswith('.') and not file.endswith('.gz'):

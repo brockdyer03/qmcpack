@@ -32,19 +32,18 @@ class BasisSets(DevBase):
         #end if
         bsfiles = []
         bss     = []
-        errors = False
+        msg = ""
         for bs in basissets:
             if isinstance(bs,BasisFile):
                 bss.append(bs)
             elif isinstance(bs,(str, Path)):
                 bsfiles.append(bs)
             else:
-                self.error('expected BasisFile type or filepath, got '+str(type(bs)),exit=False)
-                errors = True
+                msg += 'expected BasisFile type or filepath, got '+str(type(bs))+"\n"
             #end if
         #end for
-        if errors:
-            self.error('cannot create Basissets object')
+        if len(msg) > 0:
+            self.error(f'cannot create Basissets object\n{msg}')
         #end if
 
         if len(bss)>0:
@@ -362,7 +361,7 @@ class GaussianBasisSet(DevBase):
                 ngauss = int(tokens[1])
                 scale  = np.array(tokens[2:],dtype=float)
                 bterms = obj()
-                for j in range(ngauss):
+                for j in range(ngauss):  # noqa: B007
                     index,expon,coeff = basis_lines[i].split(); i+=1
                     expon = GaussianBasisSet.process_float(expon)
                     coeff = GaussianBasisSet.process_float(coeff)
@@ -379,7 +378,7 @@ class GaussianBasisSet(DevBase):
                 ngauss = int(tokens[1])
                 scale  = np.array(tokens[2:],dtype=float)
                 bterms = obj()
-                for j in range(ngauss):
+                for j in range(ngauss):  # noqa: B007
                     expon,coeff = basis_lines[i].split(); i+=1
                     expon = GaussianBasisSet.process_float(expon)
                     coeff = GaussianBasisSet.process_float(coeff)
@@ -402,7 +401,7 @@ class GaussianBasisSet(DevBase):
                 ltext = GaussianBasisSet.crystal_lmap[l_type]
                 if ltext!='sp':
                     bterms = obj()
-                    for j in range(ngauss):
+                    for j in range(ngauss):  # noqa: B007
                         expon,coeff = basis_lines[i].split(); i+=1
                         expon = GaussianBasisSet.process_float(expon)
                         coeff = GaussianBasisSet.process_float(coeff)
@@ -412,7 +411,7 @@ class GaussianBasisSet(DevBase):
                 else: # sp has shared exponent for s and p, split them now
                     sterms = obj()
                     pterms = obj()
-                    for j in range(ngauss):
+                    for j in range(ngauss):  # noqa: B007
                         expon,scoeff,pcoeff = basis_lines[i].split(); i+=1
                         expon = GaussianBasisSet.process_float(expon)
                         scoeff = GaussianBasisSet.process_float(scoeff)

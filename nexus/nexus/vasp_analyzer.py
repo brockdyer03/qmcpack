@@ -557,8 +557,8 @@ def read_outcar_bands(vlines,odata):
         #end for
         vlines.advance(n)
     #end if
-    for ns,spin in bands.items():
-        for nk,kpoint in spin.items():
+    for spin in bands.values():
+        for kpoint in spin.values():
             kpoint.energies    = np.array(kpoint.energies,dtype=float)
             kpoint.occupations = np.array(kpoint.occupations,dtype=float)
         #end for
@@ -717,9 +717,9 @@ class OutcarData(DevBase):
             if not os.path.exists(filepath):
                 self.error('file {0} does not exist'.format(filepath))
             #end if
-            f = open(filepath,'r')
-            lines = f.read().splitlines()
-            f.close()
+            with open(filepath,'r') as f:
+                lines = f.read().splitlines()
+
         #end if
         self.vlines   = VaspLines(lines)
     #end def __init__
@@ -738,7 +738,7 @@ class OutcarData(DevBase):
                 read_functions.extend(self.ilast_functions)
             #end if
         #end if
-        for quantity,read_function in read_functions:
+        for quantity,read_function in read_functions:  # noqa: B007
             try:
                 read_function(vlines,self)
             except:
@@ -847,10 +847,9 @@ class VaspAnalyzer(SimulationAnalyzer):
         if not os.path.exists(outcar):
             self.error('outcar file {0} does not exist'.format(outcar))
         #end if
-        oc = open(outcar,'r')
-        lines = oc.read().splitlines()
-        oc.close()
-        del oc
+        with open(outcar,'r') as oc:
+            lines = oc.read().splitlines()
+
         # gather initialization lines
         init = []
         n = 0

@@ -20,6 +20,7 @@ NEXUS_CORE_KEYS = (
     "stages_set",
     "status",
     "sleep",
+    "timeout",
     "file_locations",
     "pseudo_dir",
     "pseudopotentials",
@@ -157,7 +158,7 @@ def create_pseudo_files(
     """Create pseudopotential files and add them to the global pseudopotentials.
 
     This function must be called in a function that has been decorated
-    with ``@isolate_nexus_core(needs_tmp_path=True)``.
+    with ``@isolate_nexus_core``.
 
     Parameters
     ----------

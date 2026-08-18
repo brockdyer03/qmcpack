@@ -389,10 +389,10 @@ class Section(Element):
                                 self.error('cannot write pwscf input\ninvalid array species index encountered\nspecies index provided is not in the set of species present\nspecies present: {0}\nspecies used as index: {1}\narray variable: {2}'.format(sorted(atom_index.keys()),index),var)
                             #end if
                         elif isinstance(index,tuple):
-                            if var not in self.species_array_index:
+                            if var not in self.species_array_indices:
                                 self.error('cannot write pwscf input\ninvalid multidimensional array species index encountered\narray variable "{0}" does not support multidimensional species indices\nindex received: {1}'.format(var,index))
                             #end if
-                            indloc = self.species_array_index[var]
+                            indloc = self.species_array_indices[var]
                             atom = index[indloc]
                             if not isinstance(atom,str):
                                 continue
@@ -685,6 +685,127 @@ class Card(Element):
         self.change_specifier(*args,**kwargs)
     #end def change_option
 #end class Card
+
+
+class control(Section):
+    name = 'control'
+    defs = ControlDefinitions
+#end class control
+
+
+
+class system(Section):
+    name = 'system'
+    defs = SystemDefinitions
+    atomic_variables = obj(
+        hubbard_u = 'Hubbard_U',
+        start_mag = 'starting_magnetization',
+        hubbard_j = 'Hubbard_J',
+        angle1    = 'angle1',
+        angle2    = 'angle2',
+        )
+
+    # specialized read for partial array variables (hubbard U, starting mag, etc)
+    def post_process_read(self,parent):
+        if 'atomic_species' in parent:
+            keys = self.keys()
+            for alias,name in self.atomic_variables.items():
+                has_var = False
+                avals = obj()
+                akeys = []
+                for key in keys:
+                    if key.startswith(name):
+                        akeys.append(key)
+                        if '(' not in key:
+                            index=1
+                        else:
+                            index = int(key.replace(name,'').strip('()'))
+                        #end if
+                        avals[index] = self[key]
+                    #end if
+                #end for
+                if has_var:
+                    for key in akeys:
+                        del self[key]
+                    #end for
+                    atoms = parent.atomic_species.atoms
+                    value = obj()
+                    for i in range(len(atoms)):
+                        index = i+1
+                        if index in avals:
+                            value[atoms[i]] = avals[i+1]
+                        #end if
+                    #end for
+                    self[alias] = value
+                #end if
+            #end for
+        #end if
+    #end def post_process_read
+
+
+    # specialized write for odd handling of hubbard U
+    def write_old(self,parent):
+        cls = self.__class__
+        c='&'+self.name.upper()+'\n'
+        vars = list(self.keys())
+        vars.sort()
+        for var in vars:
+            val = self[var]
+            if var in self.atomic_variables:
+                if val is None: # jtk mark: patch fix for generate_pwscf_input
+                    continue    #    i.e. hubbard_u = None
+                #end if
+                if 'atomic_species' in parent:
+                    atoms = parent.atomic_species.atoms
+                    avar = self.atomic_variables[var]
+                    for i in range(len(atoms)):
+                        index = i+1
+                        vname = '{0}({1})'.format(avar,index)
+                        atom = atoms[i]
+                        if atom in val:
+                            sval = writeval[float](val[atom])
+                            c+='   '+'{0:<15} = {1}\n'.format(vname,sval)
+                        #end if
+                    #end for
+                else:
+                    self.error('cannot write {0}, atomic_species is not present'.format(var))
+                #end if
+            else:
+                #vtype = type(val)
+                #sval = writeval[vtype](val)
+
+                vtype = None
+                if isinstance(val,str):
+                    vtype = str
+                elif isinstance(val,float):
+                    vtype = float
+                #elif isinstance(val,bool):
+                #    vtype = bool
+                elif var in self.bools:
+                    vtype = bool
+                elif isinstance(val,int):
+                    vtype = int
+                else:
+                    self.error('Type "{0}" is not known as a value of variable "{1}".\nThis may reflect a need for added developer attention to support this type.  Please contact a developer.'.format(vtype.__class__.__name__,var))
+                #end if
+                sval = writeval[vtype](val)
+
+                if var in self.section_aliases.keys():
+                    vname = self.section_aliases[var]
+                else:
+                    vname = var
+                #end if
+                if vname in cls.case_map:
+                    vname = cls.case_map[vname]
+                #end if
+                #c+='   '+vname+' = '+sval+'\n'
+                c+='   '+'{0:<15} = {1}\n'.format(vname,sval)
+            #end if
+        #end for
+        c+='/'+'\n\n'
+        return c
+    #end def write
+#end class system
 
 
 class atomic_species(Card):
@@ -1189,49 +1310,31 @@ class hubbard(Card):
 
 class PwscfInput(SimulationInput):
 
-    sections = (
-        "control",
-        "system",
-        "electrons",
-        "ions",
-        "cell",
-        "fcp",
-        "rism",
-        )
-    cards = (
-        'atomic_species',
-        'atomic_positions',
-        'k_points',
-        # 'additional_k_points', # TODO: Add support
-        'cell_parameters',
-        'constraints',
-        'occupations',
-        # 'atomic_velocities', # TODO: Add support
-        'atomic_forces',
-        'solvents',
-        'hubbard',
-        )
+    sections = ('control','system','electrons','ions','cell','fcp','rism')
+    cards    = ('atomic_species','atomic_positions','atomic_forces',
+                'k_points','cell_parameters','climbing_images','constraints',
+                'collective_vars','occupations', 'hubbard')
 
     section_types = obj(
-        control   = control  ,     
-        system    = system   ,     
-        electrons = electrons,     
-        ions      = ions     ,     
-        cell      = cell     ,     
-        phonon    = phonon   ,     
-        ee        = ee            
+        control   = control,
+        system    = system,
+        electrons = electrons,
+        ions      = ions,
+        cell      = cell,
+        fcp       = fcp,
+        rism      = rism,
         )
     card_types = obj(
-        atomic_species   = atomic_species  ,    
-        atomic_positions = atomic_positions,    
-        atomic_forces    = atomic_forces   ,
-        k_points         = k_points        ,    
-        cell_parameters  = cell_parameters ,    
-        climbing_images  = climbing_images ,    
-        constraints      = constraints     ,    
-        collective_vars  = collective_vars ,    
-        occupations      = occupations     ,
-        hubbard          = hubbard         ,         
+        atomic_species   = atomic_species,
+        atomic_positions = atomic_positions,
+        atomic_forces    = atomic_forces,
+        k_points         = k_points,
+        cell_parameters  = cell_parameters,
+        climbing_images  = climbing_images,
+        constraints      = constraints,
+        collective_vars  = collective_vars,
+        occupations      = occupations,
+        hubbard          = hubbard,
         )
 
     element_types = obj(**section_types)
@@ -1350,23 +1453,21 @@ class PwscfInput(SimulationInput):
 
         vals = []
         loc = locals()
-        errors = False
+        msg = ""
         for var in vars:
             if var in loc:
                 val = loc[var]
                 if val is None:
-                    self.error('requested variable '+var+' was not found',exit=False)
-                    errors = True
+                    msg += 'requested variable '+var+' was not found\n'
                 #end if
             else:
-                self.error('requested variable '+var+' is not computed by get_common_vars',exit=False)
-                errors = True
+                msg += 'requested variable '+var+' is not computed by get_common_vars\n'
                 val = None
             #end if
             vals.append(val)
         #end for
-        if errors:
-            self.error('could not get requested variables')
+        if len(msg) > 0:
+            self.error(f'could not get requested variables:\n{msg}')
         #end if
         return vals
     #end def get_common_vars

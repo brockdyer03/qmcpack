@@ -9,6 +9,9 @@
 
 """Script for generating the input parameter enums for ``nexus/pwscf_input.py``.
 
+A more complete guide to using this script can be found in the Nexus
+documentation.
+
 Designed to be run with ``uv``, which will ensure the correct Python
 version and get all the required packages.
 
@@ -62,7 +65,6 @@ from typing import Literal, TypeAlias
 if sys.version_info[0:3] < (3, 10, 0):
     msg = "This script must be run with Python 3.10.0 or greater!\n"
     raise RuntimeError(msg)
-
 
 try:
     import xmltodict
@@ -585,8 +587,9 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
     namelist_enums = {}
     for namelist, param_dict in input_pw.items():
         name_max = max(map(len, param_dict.keys()))
-        namelist_string = (
+        namelist_legend = (
             f"# {'name':^{name_max-2}} = "
+            f"{'cased name,':^{name_max+4}}"
             "type, "
             "required, "
             "shape, "
@@ -594,8 +597,8 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
             "v_added, "
             "v_removed\n"
         )
+        namelist_string = namelist_legend
         for name, param_def in param_dict.items():
-            name = name.lower()
             # Handle formatting for the case that the removed version isn't the latest.
             if param_def.version_added == EARLIEST:
                 param_def.version_added = None
@@ -607,9 +610,11 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
             else:
                 param_def.version_removed = f"'{param_def.version_removed!s}'"
 
+            name_str = f"'{name}',"
             if param_def.version_removed is not None or param_def.version_added is not None:
                 namelist_string += (
-                    f"{name:<{name_max}} = "
+                    f"{name.lower():<{name_max}} = "
+                    f"{name_str:<{name_max+4}}"
                     f"{f'{param_def.datatype},':<7}"
                     f"{f'{param_def.required!s},':<7}"
                     f"{param_def.shape}, "
@@ -619,7 +624,8 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
                 )
             elif param_def.allowed_values is not None:
                 namelist_string += (
-                    f"{name:<{name_max}} = "
+                    f"{name.lower():<{name_max}} = "
+                    f"{name_str:<{name_max+4}}"
                     f"{f'{param_def.datatype},':<7}"
                     f"{f'{param_def.required!s},':<7}"
                     f"{param_def.shape}, "
@@ -627,27 +633,21 @@ def write_namelist_param_enum(input_pw: dict[str, dict[str, NamelistParamDefinit
                 )
             elif param_def.shape is not None:
                 namelist_string += (
-                    f"{name:<{name_max}} = "
+                    f"{name.lower():<{name_max}} = "
+                    f"{name_str:<{name_max+4}}"
                     f"{f'{param_def.datatype},':<7}"
                     f"{f'{param_def.required!s},':<7}"
                     f"{param_def.shape}\n"
                 )
             else:
                 namelist_string += (
-                    f"{name:<{name_max}} = "
+                    f"{name.lower():<{name_max}} = "
+                    f"{name_str:<{name_max+4}}"
                     f"{f'{param_def.datatype},':<7}"
                     f"{param_def.required!s}\n"
                 )
 
-        namelist_string += (
-            f"# {'name':^{name_max-2}} = "
-            "type, "
-            "required, "
-            "shape, "
-            "allowed_values, "
-            "v_added, "
-            "v_removed\n"
-        )
+        namelist_string += namelist_legend
         namelist_enums[namelist] = namelist_string
     return namelist_enums
 
@@ -715,6 +715,7 @@ PwscfInputType: TypeAlias = str | bool | int | float | Sequence | Mapping
 class NamelistParamDefinition:
     """Base class for all namelist variables."""
 
+    input_name:      str
     datatype:        type[PwscfInputType]
     required:        bool
     shape:           tuple | None = None
@@ -724,13 +725,14 @@ class NamelistParamDefinition:
 #end class NamelistDefinition
 
 
-class NamelistEnumBase(Enum):
+class NamelistEnumBase(NamelistParamDefinition, Enum):
     """Abstract base class for the namelist enumerations.
 
     Provides the ``__new__`` method for the enums.
     """
     def __new__(
         cls,
+        input_name:      str,
         datatype:        type[PwscfInputType],
         required:        bool,  # noqa: FBT001
         shape:           tuple | None = None,
@@ -740,6 +742,7 @@ class NamelistEnumBase(Enum):
     ):
         definition = NamelistParamDefinition.__new__(cls)
         definition._value_ = NamelistParamDefinition(
+            input_name,
             datatype,
             required,
             shape,
@@ -752,8 +755,11 @@ class NamelistEnumBase(Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Strip leading/trailing whitespace, underscores, and make lowercase."""
-        val = value.strip().strip("_").lower()
+        """Strip leading/trailing whitespace, and make lowercase."""
+        val = value.strip().lower()
+        if val == "lambda":
+            val = "lambda_"
+
         if val in cls.__members__:
             return cls.__members__[val]
         else:
@@ -768,7 +774,7 @@ class NamelistEnumBase(Enum):
     for key, value in namelist_enums.items():
         value = value.replace("lambda ", "lambda_")
         output_text += (
-            f"class {key.title()}Definitions(NamelistParamDefinition, NamelistEnumBase):\n"
+            f"class {key.title()}Definitions(NamelistEnumBase):\n"
             f'    """All variables belonging to the &{key} input namelist for ``pw.x``."""\n\n'
         )
         output_text += textwrap.indent(value, prefix=" "*4)

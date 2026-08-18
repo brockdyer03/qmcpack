@@ -417,7 +417,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
                     conf = obj()
                     axes = []
                     cont = True
-                    for d in (0,1,2):
+                    for d in range(3):  # noqa: B007
                         i+=1
                         axes.append(np.array(lines[i].split(),dtype=float))
                     #end for
@@ -493,7 +493,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
             while i<nlines:
                 l = lines[i]
                 if l.find('total   stress')!=-1:
-                    for j in range(3):
+                    for j in range(3):  # noqa: B007
                         i+=1
                         stress.append(list(np.array(lines[i].split(),dtype=float)))
                     #end for
@@ -522,7 +522,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
                     conf = obj()
                     aforces = []
                     found_atom = False
-                    for j in range(10):
+                    for j in range(10):  # noqa: B007
                         i+=1
                         if i<nlines and 'atom' in lines[i]:
                             found_atom = True
@@ -758,7 +758,8 @@ class PwscfAnalyzer(SimulationAnalyzer):
             text+='  {0:>3}  {1: 8.6f}    {2: 3.2f}  {3: 3.2f}  {4: 3.2f}  {5: 3.2f}\n'.format(ik,kp.weight,kpt.up+kpt.down,kpt.up-kpt.down,kpt.up,kpt.down)
         #end for
         if filepath is not None:
-            open(filepath,'w').write(text)
+            with open(filepath,'w') as fobj:
+                fobj.write(text)
         #end if
         if not return_flag:
             return text
@@ -839,7 +840,8 @@ class PwscfAnalyzer(SimulationAnalyzer):
                 struct=struct.tile(2,2,2)
                 ss=struct.write_xyz()
                 movie += ss
-                open(filepath,'w').write(movie)
+                with open(filepath,'w') as fobj:
+                    fobj.write(movie)
             #end for
         #end for
     #end def make_movie
