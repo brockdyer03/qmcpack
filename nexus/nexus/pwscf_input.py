@@ -70,6 +70,16 @@ NamelistType: TypeAlias = (
     | type[SystemDefinitions]
     )
 
+NamelistName: TypeAlias = Literal[
+    "control",
+    "system",
+    "electrons",
+    "ions",
+    "cell",
+    "fcp",
+    "rism",
+]
+
 
 def read_str(sv: str) -> str:
     """Read a string from a PwSCF input, removing leading and trailing quotes."""
@@ -435,6 +445,7 @@ class NamelistBase(DevBase):
 
     name: ClassVar[Literal["cell", "control", "electrons", "fcp", "ions", "rism", "system"]]
     namelist_def: ClassVar[NamelistType]
+    required: ClassVar[bool]
     params: dict[str, PwscfInputType]
 
     def __init__(
@@ -574,6 +585,7 @@ class NamelistBase(DevBase):
                 elif verbose:
                     warn(msg)
         #end if version is not None
+    #end def check_param
 
     @staticmethod
     def _check_param_shape(
@@ -677,6 +689,69 @@ class NamelistBase(DevBase):
             return True, ""
     #end def _check_param_version
 #end class NamelistBase
+
+
+class Control(NamelistBase):
+    """Real instance of the ``&CONTROL`` namelist."""
+
+    name = "control"
+    namelist_def = ControlDefinitions
+    required = True
+#end class Control
+
+
+class System(NamelistBase):
+    """Real instance of the ``&SYSTEM`` namelist."""
+
+    name = "system"
+    namelist_def = SystemDefinitions
+    required = True
+#end class System
+
+
+class Electrons(NamelistBase):
+    """Real instance of the ``&ELECTRONS`` namelist."""
+
+    name = "electrons"
+    namelist_def = ElectronsDefinitions
+    required = True
+#end class Control
+
+
+class Ions(NamelistBase):
+    """Real instance of the ``&IONS`` namelist."""
+
+    name = "ions"
+    namelist_def = IonsDefinitions
+    required = False
+#end class Ions
+
+
+class Cell(NamelistBase):
+    """Real instance of the ``&CELL`` namelist."""
+
+    name = "cell"
+    namelist_def = CellDefinitions
+    required = False
+#end class Cell
+
+
+class Fcp(NamelistBase):
+    """Real instance of the ``&FCP`` namelist."""
+
+    name = "fcp"
+    namelist_def = FcpDefinitions
+    required = False
+#end class Fcp
+
+
+class Rism(NamelistBase):
+    """Real instance of the ``&RISM`` namelist."""
+
+    name = "rism"
+    namelist_def = RismDefinitions
+    required = False
+#end class Rism
 
 
 class Card(Element):
@@ -1105,23 +1180,6 @@ class cell_parameters(Card):
 #end class cell_parameters
 
 
-class climbing_images(Card):
-    name = 'climbing_images'
-
-    def read_text(self,lines):
-        self.images = array_from_lines(lines)
-    #end def read_text
-
-    def write_text(self):
-        c='   '
-        for n in self.images:
-            c+=str(int(n))+' '
-        #end for
-        return c
-    #end def write_text
-#end class climbing_images
-
-
 class constraints(Card):
     name = 'constraints'
 
@@ -1152,38 +1210,6 @@ class constraints(Card):
         return c
     #end def write_text
 #end class constraints
-
-
-class collective_vars(Card):
-    name = 'collective_vars'
-
-    def read_text(self,lines):
-        tokens = lines[0].split()
-        self.ncontraints = int(tokens[0])
-        if len(tokens)>1:
-            self.tolerance = float(tokens[1])
-        #end if
-        self.collective_vars = obj()
-        for i in range(len(lines)-1):
-            tokens = lines[i+1].split()
-            collv = obj()
-            collv.type = tokens[0]
-            collv.parameters = np.array(tokens[1:],dtype=np.float64)
-            self.collective_vars[i] = collv
-        #end for
-    #end def read_text
-
-    def write_text(self):
-        c= '   '+str(self.ncollective_vars)
-        if 'tolerance' in self:
-            c+=' '+str(self.tolerance)
-        #end if
-        for collv in self.collective_vars:
-            c+='   '+collv.type+' '+array_to_string(collv.parameters,pad='')
-        #end for
-        return c
-    #end def write_text
-#end class collective_vars
 
 
 class occupations(Card):
@@ -1331,37 +1357,49 @@ class hubbard(Card):
 
 class PwscfInput(SimulationInput):
 
-    sections = ('control','system','electrons','ions','cell','fcp','rism')
-    cards    = ('atomic_species','atomic_positions','atomic_forces',
-                'k_points','cell_parameters','climbing_images','constraints',
-                'collective_vars','occupations', 'hubbard')
-
-    # section_types = obj(
-    #     control   = control,
-    #     system    = system,
-    #     electrons = electrons,
-    #     ions      = ions,
-    #     cell      = cell,
-    #     fcp       = fcp,
-    #     rism      = rism,
-    #     )
-    card_types = obj(
-        atomic_species   = atomic_species,
-        atomic_positions = atomic_positions,
-        atomic_forces    = atomic_forces,
-        k_points         = k_points,
-        cell_parameters  = cell_parameters,
-        climbing_images  = climbing_images,
-        constraints      = constraints,
-        collective_vars  = collective_vars,
-        occupations      = occupations,
-        hubbard          = hubbard,
+    required_elements: ClassVar = (
+        'control',
+        'system',
+        'electrons',
+        'atomic_species',
+        'atomic_positions',
+        'k_points',
         )
+
+    control: Control
+    system: System
+    electrons: Electrons
+    ions: Ions | None
+    cell: Cell | None
+    fcp: Fcp | None
+    rism: Rism | None
+
+    namelist_types: ClassVar = MappingProxyType({
+        "control"   : Control,
+        "system"    : System,
+        "electrons" : Electrons,
+        "ions"      : Ions,
+        "cell"      : Cell,
+        "fcp"       : Fcp,
+        "rism"      : Rism,
+        })
+    namelists: ClassVar[tuple[NamelistName]] = tuple(namelist_types.keys())
+
+    card_types: ClassVar = MappingProxyType({
+        "atomic_species"   : atomic_species,
+        "atomic_positions" : atomic_positions,
+        "atomic_forces"    : atomic_forces,
+        "k_points"         : k_points,
+        "cell_parameters"  : cell_parameters,
+        "constraints"      : constraints,
+        "occupations"      : occupations,
+        "hubbard"          : hubbard,
+        })
+    cards: ClassVar = tuple(card_types)
 
     # element_types = obj(**section_types)
     # element_types.update(**card_types)
 
-    required_elements = ('control','system','electrons','atomic_species','atomic_positions','k_points')
     def __init__(self,*elements):
         elements = list(elements)
         if len(elements)==1 and os.path.exists(elements[0]):
