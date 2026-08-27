@@ -63,3 +63,12 @@ This is simply a reminder of what we are going to look for before merging your c
 * * [ ] Code added or changed in the PR has been clang-formatted
 * * [ ] This PR adds tests to cover any new code, or to catch a bug that is being fixed
 * * [ ] Documentation has been added (if appropriate)
+
+<!-- If your PR uses an LLM, please uncomment the following lines and note which LLM you used, and for what part of the work you used it for. -->
+
+<!-- delete this line
+> [!NOTE]
+> This PR was created with the assistance of <name of LLM, with model number>. It was used to <generate code, review code, brainstorm ideas>.
+>
+> I understand that I am responsible for all code under my name in this PR, regardless of LLM usage.
+delete this line-->
