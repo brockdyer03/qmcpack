@@ -23,6 +23,7 @@ from .nexus_base import nexus_noncore
 from .simulation import SimulationInput
 from .structure import interpolate_structures, Structure
 from .physical_system import PhysicalSystem
+from .pseudoset import PseudoSet
 from .developer import DevBase, obj, error
 from .utilities import path_string
 from . import numpy_extensions as npe
@@ -3051,6 +3052,13 @@ def generate_any_vasp_input(**kwargs):
             vf[name] = default
         #end if
     #end for
+    if vf.pseudos is not None:
+        vf.pseudos = PseudoSet.get_pseudos(
+            pseudos = vf.pseudos,
+            system = vf.system,
+            code = 'vasp',
+            )
+    #end if
     gen_kpoints = 'kspacing' not in kwargs
 
     # create an empty input file
