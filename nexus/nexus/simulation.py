@@ -63,29 +63,28 @@
 #      User-facing function to create SimulationInputMultiTemplate's.#
 #                                                                    #
 #====================================================================#
+from __future__ import annotations
 
-
-import contextlib
 import os
-import sys
 import shutil
+import sys
 import tempfile
 import traceback
-from functools import partial
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from string import Template
 from subprocess import Popen
-from typing import ClassVar
-from .developer import DevBase, obj, unavailable, FileFormatError, NexusError
-from .structure import Structure, read_structure
-from .physical_system import PhysicalSystem
+from typing import ClassVar, Literal
+
+from .developer import DevBase, FileFormatError, NexusError, obj, unavailable
 from .machines import Job, Workstation, get_machine
-from .nexus_base import NexusCore, nexus_core, dynamic_storage
+from .nexus_base import NexusCore, dynamic_storage, nexus_core
+from .physical_system import PhysicalSystem
+from .structure import Structure, read_structure
 from .utilities import path_string
 
- 
+
 class SimulationInput(NexusCore):
     def is_valid(self):
         raise NotImplementedError
@@ -228,7 +227,7 @@ class SimulationImage(NexusCore):
     save_fields = load_fields | save_only_fields
 
     def __init__(self):
-        None
+        pass
     #end def __init__
 
     def save_image(self,sim,imagefile):
@@ -265,37 +264,88 @@ class SimulationImage(NexusCore):
 
 
 class Simulation(NexusCore):
-    input_type    = SimulationInput
-    analyzer_type = SimulationAnalyzer
-    generic_identifier = 'sim'
-    infile_extension   = '.in'
-    outfile_extension  = '.out'
-    errfile_extension  = '.err'
-    application   = 'simapp'
-    application_properties = frozenset({'serial'})
-    application_results    = frozenset()
+    """Base class for simulation code classes.
+    
+    The current base classes are
+
+    * :class:`~nexus.qmcpack.Qmcpack`
+    * :class:`~nexus.pwscf.Pwscf`
+    * :class:`~nexus.pyscf_sim.Pyscf`
+    * :class:`~nexus.gamess.Gamess`
+    * :class:`~nexus.rmg.Rmg`
+    * :class:`~nexus.quantum_package.QuantumPackage`
+    * :class:`~nexus.vasp.Vasp`
+    """
+
+    input_type: ClassVar[type[SimulationInput]] = SimulationInput
+    """The simulation's corresponding input class."""
+
+    analyzer_type: ClassVar[type[SimulationAnalyzer]] = SimulationAnalyzer
+    """The simulation's corresponding analyzer class."""
+
+    generic_identifier: ClassVar[str] = 'sim'
+    """The identifier to use for the simulation, e.g. ``qmcpack``."""
+
+    infile_extension: ClassVar[str] = '.in'
+    """Extension for the simulation's input files."""
+
+    outfile_extension: ClassVar[str] = '.out'
+    """Extension for the simulation's output files."""
+
+    errfile_extension: ClassVar[str] = '.err'
+    """Extension for the simulation's error files."""
+
+    application: ClassVar[str] = 'simapp'
+    """Name of the simulation's executable, e.g. ``qmcpack`` or ``pw.x``."""
+
+    application_properties: ClassVar[frozenset[str]] = frozenset({'serial'})
+    """Extra properties used by :class:`~.machines.Job`."""
+
+    application_results: ClassVar[frozenset] = frozenset()
+    """Any results that can be taken from the simulation and used by another."""
+
     allow_overlapping_files = False
-    allowed_inputs = frozenset({
+    """Used by :meth:`~.project_manager.ProjectManager.resolve_file_collisions`."""
+
+    allowed_inputs: ClassVar[frozenset[str]] = frozenset({
         'identifier','path','infile','outfile','errfile','imagefile',
         'input','job','files','dependencies','analysis_request',
         'block','block_subcascade','app_name','app_props','system',
         'skip_submit','force_write','simlabel','fake_sim',
         'restartable','force_restart'
         })
-    sim_imagefile      = 'sim.p'
-    input_imagefile    = 'input.p'
-    analyzer_imagefile = 'analyzer.p'
-    image_directory    = 'sim'
-    supports_restarts  = False
-    renew_app_command  = False
 
-    is_bundle = False
+    sim_imagefile: ClassVar[str] = 'sim.p'
+    """Name of the simulation image pickle file. See :class:`~.SimulationImage`."""
 
-    sim_count = 0
-    creating_fake_sims = False
+    input_imagefile: ClassVar[str] = 'input.p'
+    """Name of the simulation input pickle file."""
+
+    analyzer_imagefile: ClassVar[str] = 'analyzer.p'
+    """Name of the simulation analyzer pickle file."""
+
+    image_directory: ClassVar[str] = 'sim'
+    """The directory that the simulation pickles go in."""
+
+    supports_restarts: ClassVar[bool] = False
+    """Denote if a simulation supports being restarted from where it left off."""
+
+    renew_app_command: ClassVar[bool] = False
+
+    is_bundle: bool = False
+    """Instance variable denoting if the simulation is part of a bundle."""
+
+    sim_count: ClassVar[int] = 0
+    """The total number of simulations that exist"""
+
+    creating_fake_sims: bool = False
+    """Switch to only create fake simulation objects."""
 
     sim_directories: ClassVar[dict] = dict()
-    all_sims: ClassVar[list] = []
+    """Simulation directories as keys, values are sets of simulation IDs."""
+
+    all_sims: ClassVar[list[Simulation]] = []
+    """List of all current simulations."""
 
     @classmethod
     def clear_all_sims(cls):
@@ -312,6 +362,7 @@ class Simulation(NexusCore):
     # test needed
     @classmethod
     def separate_inputs(cls,kwargs,overlapping_kw=-1,sim_kw=None):
+        """Separate simulation keyword arguments from simulation keyword arguments."""
         if overlapping_kw==-1:
             overlapping_kw = set(['system'])
         elif overlapping_kw is None:
@@ -438,11 +489,13 @@ class Simulation(NexusCore):
 
 
     def fake(self):
+        """Check if a simulation is fake or real."""
         return self.fake_sim
     #end def fake
 
 
     def init_job(self):
+        """Initialize the job for a simulation."""
         if self.job is None:
             msg = 'job not provided.  Input field job must be set to a Job object.'
             raise ValueError(msg)
@@ -461,11 +514,13 @@ class Simulation(NexusCore):
 
 
     def init_job_extra(self):
-        None
+        """Can be implemented by a subclass to customize job initialization."""
+        pass
     #end def init_job_extra
 
 
     def set_app_name(self,app_name):
+        """Can be overridden by subclasses."""
         self.app_name = app_name
     #end def set_app_name
 
