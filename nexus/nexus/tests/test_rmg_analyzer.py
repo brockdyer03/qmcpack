@@ -30,22 +30,20 @@ representative_runs = (
 
 
 def test_empty_init():
-    from ..developer import obj
     from ..rmg_analyzer import RmgAnalyzer
 
     analyzer = RmgAnalyzer()
 
     expected_members = {
-        'abspath','info','input','outfile_name','path','results','run_mode',
+        'info','input','outfile_name','path','results','run_mode',
         }
     assert set(analyzer.keys())==expected_members
     assert analyzer.path is None
-    assert analyzer.abspath is None
     assert analyzer.outfile_name is None
     assert analyzer.input is None
     assert analyzer.run_mode is None
     assert analyzer.results is None
-    assert isinstance(analyzer.info,obj)
+    assert isinstance(analyzer.info,dict)
     assert len(analyzer.info)==0
 #end def test_empty_init
 

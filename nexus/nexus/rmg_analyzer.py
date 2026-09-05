@@ -4,32 +4,59 @@
 
 
 import os
+import os.path as osp
 import re
 from copy import deepcopy
+from dataclasses import dataclass
+from os import PathLike
+from pathlib import Path
 from types import MappingProxyType
+from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 
-from .developer import DevBase, dotdict, obj
+from .developer import DevBase, FileFormatError
 from .simulation import Simulation, SimulationAnalyzer
-from .structure import generate_structure
+from .structure import Structure, generate_structure
 from .unit_converter import UnitConverter, convert
 
 
-def as_float(text):
+def as_float(text: str) -> float | None:
     """Convert a finite RMG-formatted number to a float when possible."""
     try:
         value = float(text.lower().replace('d','e'))
-    except (AttributeError,ValueError):
+    except ValueError:
         return None
     return value if np.isfinite(value) else None
 #end def as_float
 
 
-def normalize_line(line):
+def normalize_line(line: str) -> str:
     """Collapse whitespace in an output line."""
     return ' '.join(line.split())
 #end def normalize_line
+
+
+@dataclass(slots=True)
+class RmgSetupInfo:
+    run_mode:        Literal["scf", "nscf", "relax"]
+    structure:       Structure
+    kpoints_crystal: npt.NDArray[np.floating] | None
+    kpoints_cart:    npt.NDArray[np.floating] | None
+    kweights:        npt.NDArray[np.floating] | None
+
+
+@dataclass(slots=True)
+class RmgBandInfo:
+    fermi_energies:         list[float]
+    valence_band_maxima:    list[float]
+    conduction_band_minima: list[float]
+    band_gaps:              list[float]
+    kpoints_crystal:        npt.NDArray[np.floating] | None
+    kpoints:                npt.NDArray[np.floating] | None
+    eigenvalues:            npt.NDArray[np.floating] | None
+    occupations:            npt.NDArray[np.floating] | None
 
 
 class RmgOutData(DevBase):
@@ -44,21 +71,17 @@ class RmgOutData(DevBase):
     ----------
     path : str
         Directory containing the output file.
-    abspath : str
-        Absolute path to the output directory.
     outfile_name : str
         Name of the RMG output file.
-    setup_info : obj
+    setup_info : RmgSetupInfo
         Run mode and the initial structure, when available.
-    run_mode : str or None
-        Short RMG calculation mode: ``"scf"``, ``"nscf"``, or ``"relax"``.
-    geometry : obj or None
-        Cartesian k-points and k-point weights.
+    run_mode : {"scf", "nscf", "relax"} or None
+        Short RMG calculation mode.
     energy : float or numpy.floating or None
         Last total energy obtained from the eigenvalue sum.
     energy_units : str or None
         Units associated with ``energy``.
-    electronic : obj or None
+    electronic : RmgBandInfo or None
         Fermi energies, band edges, gaps, k-points, eigenvalues, and
         occupations when reported.
     forces : numpy.ndarray or None
@@ -90,65 +113,63 @@ class RmgOutData(DevBase):
     # Example: -1.2345D+02
     number_pattern = r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?'
 
+    run_mode: Literal["scf", "nscf", "relax"] | None
+    rel_path: str
+    outfile_name: str
+    full_path: Path
+    setup_info: RmgSetupInfo
+    energy: float
+    energy_units: Literal["Ha"]
+    electronic: RmgBandInfo
+    forces: None
+    structures: None
+    stress: None
+    pressure: None
 
-    def __init__(self,filepath):
+
+    def __init__(self, filepath: PathLike):
         """Initialize the parsed data by reading an RMG output file."""
-        if not isinstance(filepath,(str,os.PathLike)):
+        if not isinstance(filepath, str | PathLike):
             msg = (
                 'invalid type provided for filepath\n'
                 'Type expected: str or os.PathLike\n'
                 f'Type provided: {type(filepath).__name__}'
                 )
             raise TypeError(msg)
-        filepath = os.fspath(filepath)
-        if not os.path.exists(filepath):
-            msg = (
-                'RMG log output file does not exist.\n'
-                f'Path provided: {filepath}'
-                )
-            raise FileNotFoundError(msg)
-        elif not os.path.isfile(filepath):
+
+        full_path = Path(filepath).resolve(strict=True)
+        if not full_path.is_file():
             msg = (
                 'Path provided for RMG log output is not a file.\n'
                 f'Path provided: {filepath}'
                 )
             raise IsADirectoryError(msg)
-        path,outfile_name  = os.path.split(filepath)
-        self.path          = path
-        self.abspath       = os.path.abspath(path)
-        self.outfile_name  = outfile_name
-        self.setup_info    = None
+
+        self.rel_path     = osp.split(filepath)[0]
+        self.outfile_name = full_path.name
+        self.full_path    = full_path
 
         with open(filepath,'r') as input_file:
             lines = input_file.read().splitlines()
-        self.read_setup_info(lines)
+
+        self.setup_info = self.read_setup_info(lines)
 
         # modes: scf, nscf, relax
-        if self.run_mode in {'scf','nscf','relax'}:
-            self.geometry     = None
+        if self.setup_info.run_mode in {'scf','nscf','relax'}:
             self.energy       = None
             self.energy_units = None
-            self.electronic   = None
-            self.forces       = None
-            self.structures   = None
+            self.electronic   = self.read_electronic(lines)
+            self.structures, self.forces = self.read_ions(lines)
             self.stress       = None
             self.pressure     = None
 
-            self.read_geometry()
             self.read_energies(lines)
-            self.read_ions(lines)
             self.read_stress(lines)
-            self.read_electronic(lines)
     #end def __init__
 
 
-    def read_setup_info(self,lines):
+    def read_setup_info(self, lines: list[str]) -> RmgSetupInfo:
         """Read the run mode and initial structure from the setup report."""
-        setup_info = obj(
-            run_mode  = None,
-            structure = None,
-            k_points  = None,
-            )
 
         # Read the calculation mode from the run setup block.
         run_mode = None
@@ -173,8 +194,6 @@ class RmgOutData(DevBase):
                 ):
                 run_mode = 'relax'
             break
-        self.run_mode       = run_mode
-        setup_info.run_mode = run_mode
 
         # Read the lattice vectors used to construct the input structure.
         axes      = {}
@@ -237,33 +256,35 @@ class RmgOutData(DevBase):
                     positions.append(values)
                 i += 1
             if len(atoms)>0:
-                position_tables.append(obj(
-                    units     = units,
-                    atoms     = np.array(atoms,dtype=object),
-                    positions = np.array(positions,dtype=float),
-                    ))
+                position_tables.append({
+                    "units": units,
+                    "atoms": np.array(atoms,dtype=object),
+                    "positions": np.array(positions,dtype=float),
+                    })
 
         if set(axes)=={'x','y','z'} and len(position_tables)>0:
             ion_positions = next(
-                (table for table in position_tables if table.units=='B'),
+                (table for table in position_tables if table["units"]=='B'),
                 position_tables[0],
                 )
             aunits = 'B' if axis_unit in {None,'a0','B','bohr'} else 'A'
             axes_array = np.array(
-                [axes[c] for c in ('x','y','z')],dtype=float)
-            axes_array = convert(axes_array,aunits,'B')
-            positions  = convert(ion_positions.positions,ion_positions.units,'B')
+                [axes[c] for c in ('x','y','z')],
+                dtype=float
+                )
+            axes_array = convert(axes_array, aunits, 'B')
+            positions  = convert(ion_positions["positions"], ion_positions["units"],'B')
             valid      = (
                 axes_array.shape==(3,3)
                 and positions.ndim==2
                 and positions.shape[1:]==(3,)
-                and len(ion_positions.atoms)==len(positions)
+                and len(ion_positions["atoms"])==len(positions)
                 )
             if valid:
-                setup_info.structure = generate_structure(
+                structure = generate_structure(
                     units = 'B',
                     axes  = axes_array,
-                    elem  = ion_positions.atoms,
+                    elem  = ion_positions["atoms"],
                     pos   = positions,
                     )
 
@@ -289,24 +310,38 @@ class RmgOutData(DevBase):
                 kpoints.append(values[:3])
                 kweights.append(values[3])
             break
+
         if len(kpoints)>0:
-            kpoints  = np.array(kpoints,dtype=float)
+            kpoints_crystal  = np.array(kpoints,dtype=float)
             kweights = np.array(kweights,dtype=float)
-            setup_info.k_points = obj(
-                kpoints_crystal = kpoints,
-                kweights        = kweights,
-                )
-            if setup_info.structure is not None:
-                setup_info.structure.add_kpoints(
-                    kpoints,
+            if structure is not None:
+                structure.add_kpoints(
+                    kpoints_crystal,
                     kweights,
                     recenter = False,
                     cell_unit = True,
                     )
-        self.setup_info = setup_info
+                kpoints_cart = np.dot(
+                    kpoints_crystal, structure.kaxes
+                    )
+        else:
+            kpoints_crystal = None
+            kweights = None
+            kpoints_cart = None
+
+        setup_info = RmgSetupInfo(
+            run_mode = run_mode,
+            structure = structure,
+            kpoints_crystal = kpoints_crystal,
+            kpoints_cart = kpoints_cart,
+            kweights = kweights,
+        )
+
+        return setup_info
     #end def read_setup_info
 
-    def read_energies(self,lines):
+
+    def read_energies(self, lines: list[str]):
         """Read the final total energy obtained from the eigenvalue sum."""
         label = 'final total energy from eig sum'
         for line in lines:
@@ -323,16 +358,17 @@ class RmgOutData(DevBase):
             value = as_float(tokens[0])
             if value is None:
                 continue
-            self.energy       = value
-            self.energy_units = tokens[1].strip(',;') if len(tokens)>=2 else 'Ha'
+            energy       = value
+            energy_units = tokens[1].strip(',;') if len(tokens)>=2 else 'Ha'
+            return energy, energy_units
+
+        msg = f"Could not find final total energy in output at {self.full_path}"
+        raise FileFormatError(msg)
     #end def read_energies
 
 
-    def read_electronic(self,lines):
+    def read_electronic(self, lines: list[str]):
         """Parse electronic quantities exposed by ``RmgAnalyzer``.
-
-        Binds ``electronic`` to an ``obj`` containing Fermi energies, band
-        edges, gaps, k-point-major eigenvalues, occupations, and k-points.
 
         Parameters
         ----------
@@ -357,7 +393,7 @@ class RmgOutData(DevBase):
             return None
         #end def assigned_value
 
-        data = obj(
+        data = RmgBandInfo(
             fermi_energies         = [],
             valence_band_maxima    = [],
             conduction_band_minima = [],
@@ -376,7 +412,7 @@ class RmgOutData(DevBase):
             re.IGNORECASE
             )
         datasets = []
-        dataset  = dotdict()
+        dataset  = {}
         kpoint   = None
         spin     = 'none'
         # Collect scalar results and candidate eigenvalue tables in one pass.
@@ -389,7 +425,7 @@ class RmgOutData(DevBase):
                 text,
                 lower,
                 'conduction band minimum',
-                'conduction band minumm',
+                'conduction band minumm', # RMG 7.1 has this misspelling
                 )
             gap = assigned_value(text,lower,'band gap')
             if fermi is not None:
@@ -416,11 +452,11 @@ class RmgOutData(DevBase):
                     continue
                 if index in dataset:
                     datasets.append(dataset)
-                    dataset = dotdict()
-                dataset[index] = dotdict(
-                    kpoint   = np.array(coordinates,dtype=float),
-                    channels = dotdict(),
-                    )
+                    dataset = {}
+                dataset[index] = {
+                    "kpoint"  : np.array(coordinates, dtype=float),
+                    "channels": {},
+                    }
                 kpoint = index
                 spin   = 'none'
                 continue
@@ -441,7 +477,7 @@ class RmgOutData(DevBase):
             pairs = pair_pattern.findall(row_text)
             if len(pairs)==0:
                 continue
-            channels = dataset[kpoint].channels
+            channels = dataset[kpoint]["channels"]
             eigs,occs = channels.setdefault(spin,[[],[]])
             for eigenvalue,occupation in pairs:
                 eigenvalue = as_float(eigenvalue)
@@ -450,16 +486,17 @@ class RmgOutData(DevBase):
                     eigs.append(eigenvalue)
                     occs.append(occupation)
 
-        for name,values in data.items():
-            if values is not None:
-                data[name] = np.array(values,dtype=float)
+        data.fermi_energies = np.asarray(data.fermi_energies, dtype=float)
+        data.valence_band_maxima = np.asarray(data.valence_band_maxima, dtype=float)
+        data.conduction_band_minima = np.asarray(data.conduction_band_minima, dtype=float)
+        data.band_gaps = np.asarray(data.band_gaps, dtype=float)
 
         if len(dataset)>0:
             datasets.append(dataset)
         # Retain the final complete table with consistent spin and band counts.
         expected_kpoints = None
-        if self.setup_info.k_points is not None:
-            expected_kpoints = len(self.setup_info.k_points.kpoints_crystal)
+        if self.setup_info.kpoints_crystal is not None:
+            expected_kpoints = len(self.setup_info.kpoints_crystal)
         for candidate in reversed(datasets):
             indices = sorted(candidate)
             if indices!=list(range(len(indices))):
@@ -468,7 +505,7 @@ class RmgOutData(DevBase):
                 continue
             spin_channels = set()
             for record in candidate.values():
-                spin_channels.update(record.channels)
+                spin_channels.update(record["channels"])
             if spin_channels=={'none'}:
                 spins = ['none']
             elif spin_channels=={'up','down'}:
@@ -476,7 +513,7 @@ class RmgOutData(DevBase):
             else:
                 continue
             channels = [
-                candidate[index].channels.get(spin)
+                candidate[index]["channels"].get(spin)
                 for index in indices for spin in spins
             ]
             if any(
@@ -489,15 +526,23 @@ class RmgOutData(DevBase):
             if len({len(channel[0]) for channel in channels})!=1:
                 continue
             data.kpoints_crystal = np.array(
-                [candidate[i].kpoint for i in indices],dtype=float)
-            data.eigenvalues = np.array([
-                [candidate[i].channels[spin][0] for spin in spins]
-                for i in indices
-                ],dtype=float)
-            data.occupations = np.array([
-                [candidate[i].channels[spin][1] for spin in spins]
-                for i in indices
-                ],dtype=float)
+                [candidate[i]["kpoint"] for i in indices],
+                dtype=float,
+                )
+            data.eigenvalues = np.array(
+                [
+                    [candidate[i]["channels"][spin][0] for spin in spins]
+                    for i in indices
+                ],
+                dtype=float,
+                )
+            data.occupations = np.array(
+                [
+                    [candidate[i]["channels"][spin][1] for spin in spins]
+                    for i in indices
+                ],
+                dtype=float,
+                )
             if spins==['none']:
                 data.eigenvalues = data.eigenvalues[:,0,:]
                 data.occupations = data.occupations[:,0,:]
@@ -506,13 +551,13 @@ class RmgOutData(DevBase):
                     data.kpoints_crystal,self.setup_info.structure.kaxes)
             break
 
-        nfound = sum(v.size for v in data.values() if isinstance(v,np.ndarray))
-        if nfound>0:
-            self.electronic = data
+        return data
     #end def read_electronic
 
 
-    def read_ions(self,lines):
+    def read_ions(
+        self, lines: list[str]
+        ) -> tuple[list[Structure | None], npt.NDArray[np.floating]]:
         """Read ionic forces and structures from ionic-step tables.
 
         Binds ``forces`` to a trajectory array and ``structures`` to a mapping
@@ -524,7 +569,7 @@ class RmgOutData(DevBase):
             Complete RMG log split into lines.
         """
         force_records = []
-        structures    = obj()
+        structures    = [None] # First one doesn't have forces.
         initial       = self.setup_info.structure
         i = 0
         # Collect forces and construct a structure for each ionic step.
@@ -571,44 +616,14 @@ class RmgOutData(DevBase):
                         initial.kweights,
                         recenter = False,
                         )
-                    structures[len(force_records)-1] = structure
-        # Bind trajectories only when every ionic step has a consistent size.
-        if (
-            len(force_records)>0
-            and len({len(forces) for forces in force_records})==1
-            ):
-            self.forces = np.array(force_records,dtype=float)
-            if len(structures)==len(force_records):
-                self.structures = structures
+                    structures.append(structure)
+
+        forces = np.array(force_records,dtype=float)
+        return structures, forces
     #end def read_ions
 
 
-    def read_geometry(self):
-        """Collect k-point data derived from the setup report.
-
-        Binds ``geometry`` to an ``obj`` containing Cartesian k-points and
-        k-point weights.
-        """
-        geometry = obj(
-            kpoints_cart = None,
-            kweights     = None,
-            )
-        structure = self.setup_info.structure
-        if structure is not None and len(structure.kpoints)>0:
-            geometry.kpoints_cart = structure.kpoints
-            geometry.kweights     = structure.kweights
-        elif self.setup_info.k_points is not None:
-            kpoints                  = self.setup_info.k_points
-            geometry.kweights        = kpoints.kweights
-            if structure is not None and len(kpoints.kpoints_crystal)>0:
-                geometry.kpoints_cart = np.dot(
-                    kpoints.kpoints_crystal,structure.kaxes)
-        if geometry.kpoints_cart is not None or geometry.kweights is not None:
-            self.geometry = geometry
-    #end def read_geometry
-
-
-    def read_stress(self,lines):
+    def read_stress(self, lines: list[str]):
         """Parse stress tensors and derive hydrostatic pressures.
 
         Binds ``stress`` to a NumPy array of shape ``(nsteps, 3, 3)`` and
@@ -652,8 +667,10 @@ class RmgOutData(DevBase):
         if len(tensors)>0:
             stress        = np.array(tensors,dtype=float)
             pressures     = -np.trace(stress,axis1=1,axis2=2)/3.0
-            self.stress   = stress
-            self.pressure = pressures[-1]
+            return stress, pressures[-1]
+
+        msg = "Could not read stress or pressures from RMG file!"
+        raise FileFormatError(msg)
     #end def read_stress
 
 
@@ -673,11 +690,9 @@ class RmgAnalyzer(SimulationAnalyzer):
     ----------
     path : str or None
         Directory containing the RMG log output file.
-    abspath : str or None
-        Absolute path to the output directory.
     outfile_name : str or None
         Name of the RMG log output file.
-    info : obj
+    info : dict
         General analyzer metadata.
     input : RmgInput or None
         Reserved analyzer input member; this reduced implementation leaves it
@@ -762,6 +777,51 @@ class RmgAnalyzer(SimulationAnalyzer):
         'Ha/Bohr^3' : 1e8*UnitConverter.B**3/UnitConverter.Ha,
         'Ry/Bohr^3' : 1e8*UnitConverter.B**3/UnitConverter.Ry,
         })
+
+
+    def __init__(self,arg0=None,*,analyze=False):
+        """Initialize analyzer state and optionally parse the RMG output."""
+        self.path         = None
+        self.outfile_name = None
+        self.info         = {}
+        self.input        = None
+        self.run_mode     = None
+        self.results      = None
+
+        if arg0 is None:
+            return
+        if isinstance(arg0,Simulation):
+            path     = arg0.locdir
+            filename = arg0.outfile
+        else:
+            if not isinstance(arg0,(str,os.PathLike)):
+                msg = (
+                    'invalid type provided for log_file\n'
+                    'Type expected: str or os.PathLike\n'
+                    f'Type provided: {type(arg0).__name__}'
+                    )
+                raise TypeError(msg)
+            arg0 = os.fspath(arg0)
+            if not osp.exists(arg0):
+                msg = (
+                    'RMG log output file does not exist.\n'
+                    f'Path provided: {arg0}'
+                    )
+                raise FileNotFoundError(msg)
+            elif not osp.isfile(arg0):
+                msg = (
+                    'Path provided for RMG log output is not a file.\n'
+                    f'Path provided: {arg0}'
+                    )
+                raise IsADirectoryError(msg)
+            path,filename = osp.split(arg0)
+
+        self.path         = path
+        self.outfile_name = filename
+
+        if analyze:
+            self.analyze()
+    #end def __init__
 
 
     def _require_supported(self,quantity,modes):
@@ -991,59 +1051,12 @@ class RmgAnalyzer(SimulationAnalyzer):
     #end def pressure
 
 
-    def __init__(self,arg0=None,*,analyze=False):
-        """Initialize analyzer state and optionally parse the RMG output."""
-        self.path         = None
-        self.abspath      = None
-        self.outfile_name = None
-        self.info         = obj()
-        self.input        = None
-        self.run_mode     = None
-        self.results      = None
-
-        if arg0 is None:
-            return
-        if isinstance(arg0,Simulation):
-            path     = arg0.locdir
-            filename = arg0.outfile
-        else:
-            if not isinstance(arg0,(str,os.PathLike)):
-                msg = (
-                    'invalid type provided for log_file\n'
-                    'Type expected: str or os.PathLike\n'
-                    f'Type provided: {type(arg0).__name__}'
-                    )
-                raise TypeError(msg)
-            arg0 = os.fspath(arg0)
-            if not os.path.exists(arg0):
-                msg = (
-                    'RMG log output file does not exist.\n'
-                    f'Path provided: {arg0}'
-                    )
-                raise FileNotFoundError(msg)
-            elif not os.path.isfile(arg0):
-                msg = (
-                    'Path provided for RMG log output is not a file.\n'
-                    f'Path provided: {arg0}'
-                    )
-                raise IsADirectoryError(msg)
-            path,filename = os.path.split(arg0)
-
-        self.path         = path
-        self.abspath      = os.path.abspath(path)
-        self.outfile_name = filename
-
-        if analyze:
-            self.analyze()
-    #end def __init__
-
-
     def analyze(self):
         """Parse the configured RMG output into an ``RmgOutData`` instance."""
-        filepath      = os.path.join(self.path,self.outfile_name)
+        filepath      = osp.join(self.path,self.outfile_name)
         results       = RmgOutData(filepath)
         self.results  = results
-        self.run_mode = results.run_mode
+        self.run_mode = results.setup_info.run_mode
     #end def analyze
 
 #end class RmgAnalyzer
