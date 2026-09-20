@@ -2,9 +2,21 @@
 
 Notable changes to QMCPACK and NEXUS are documented in this file.
 
-## Unreleased Changes
+## [Unreleased]
 
-### QMCPACK
+* Removed use of legacy NIST-like sparse BLAS Level 2 and Level 3 APIs from MKL in AFQMC due to their removal in the oneAPI 2026 release.
+* Introduce the use of OpenMP offload unified shared memory feature that eliminates device copies of data. Use CMake option QMC_OFFLOAD_USM to opt in.
+
+## [4.4.0] - 2026-08-31
+
+This QMCPACK release contains numerous feature improvements, bug fixes, and optimizations. An experimental interface to neural
+network wavefunctions is added, full support for CASSCF wavefunctions from PySCF is provided, and we introduce a new option that can
+reduce memory pressure in GPU runs. Nexus has been significantly enhanced with thoroughly revised documentation
+(https://nexus-workflows.readthedocs.io/en/latest/), QMCPACK restart support, and a complete update of common electronic structure
+code inputs. Error handling has been expanded, improving the robustness of higher-throughput workflows. These updates are therefore
+recommended for all users. As first noted in the v4.2.0 release we plan to remove the legacy QMC drivers in an upcoming release:
+users should transition to batched drivers. To make best use of limited development resources, we are also considering removing
+AFQMC support and the LMY optimization engine. Feedback is welcome.
 
 * DeepQMC neural-network wavefunctions are integrated with QMCPACK on an exploratory/developmental basis. [#6061](https://github.com/QMCPACK/qmcpack/pull/6061)
 * Significant speedup of v1 T-move nonlocal pseudopotential evaluation on GPUs via batched algorithm, thanks to @HaoZeke. [#6079](https://github.com/QMCPACK/qmcpack/pull/6079)
@@ -20,8 +32,9 @@ Notable changes to QMCPACK and NEXUS are documented in this file.
 * macOS bus error fix in unit tests. [#6031](https://github.com/QMCPACK/qmcpack/pull/6031)
 * `qdens` supports spin-density estimators in batched QMC. [#6117](https://github.com/QMCPACK/qmcpack/pull/6117)
 * `qmca` can generate image output. [#5994](https://github.com/QMCPACK/qmcpack/pull/5994)
+* Numerous minor bug fixes and internal refactoring.
 
-### NEXUS
+### NEXUS [2.4.0]
 
 * New documentation theme and structure at https://nexus-workflows.readthedocs.io/en/latest/ . [#5978](https://github.com/QMCPACK/qmcpack/pull/5978)
 * QMCPACK restart workflows are supported in Nexus, enabling arbitrary length QMC runs. [#6107](https://github.com/QMCPACK/qmcpack/pull/6107)
@@ -45,6 +58,7 @@ Notable changes to QMCPACK and NEXUS are documented in this file.
 * Periodic-table isotope accessors. [#6000](https://github.com/QMCPACK/qmcpack/pull/6000)
 * Initial support for dynamic workflows. [#5986](https://github.com/QMCPACK/qmcpack/pull/5986)
 * Updated Nexus developer style guide. [#6120](https://github.com/QMCPACK/qmcpack/pull/6120)
+* Ongoing refactoring and minor bug fixes throughout.
 
 ## [4.3.0] - 2026-06-09
 
