@@ -28,7 +28,7 @@ def get_quantum_package_sim(**kwargs):
 
     system = generate_physical_system(
         elem_pos = '''
-            O  0.000000  0.000000  0.000000 
+            O  0.000000  0.000000  0.000000
             H  0.000000  0.757160  0.586260
             H  0.000000  0.757160 -0.586260
             ''',
@@ -43,7 +43,7 @@ def get_quantum_package_sim(**kwargs):
         )
 
     assert(isinstance(sim,QuantumPackage))
-    
+
     return sim
 #end def get_quantum_package_sim
 
@@ -59,7 +59,7 @@ def test_minimal_init():
 
 def test_check_result():
     sim = get_quantum_package_sim()
-    
+
     assert(not sim.check_result('unknown',None))
     assert(not sim.check_result('orbitals',None))
 
@@ -76,7 +76,7 @@ def test_get_result():
     from ..developer import obj
 
     sim = get_quantum_package_sim()
-    
+
     with pytest.raises(
         NotImplementedError,
         match="ability to get result unknown has not been implemented",
@@ -115,7 +115,7 @@ def test_incorporate_result():
     Gamess.ericfmt = None
 
     sim = get_quantum_package_sim()
-    
+
     with pytest.raises(
         NotImplementedError,
         match="ability to get result unknown has not been implemented",
@@ -134,12 +134,12 @@ def test_incorporate_result():
 
 @isolate_nexus_core
 def test_check_sim_status(tmp_path):
-    from ..nexus_base import nexus_core
+    from ..nexus_base import nexus_config
 
-    nexus_core.runs = ''
-    nexus_core.local_directory  = str(tmp_path)
-    nexus_core.remote_directory = str(tmp_path)
-    nexus_core.file_locations = nexus_core.file_locations + [str(tmp_path)]
+    nexus_config.runs = ''
+    nexus_config.local_directory  = str(tmp_path)
+    nexus_config.remote_directory = str(tmp_path)
+    nexus_config.file_locations = nexus_config.file_locations + [str(tmp_path)]
 
     sim = get_quantum_package_sim()
 
