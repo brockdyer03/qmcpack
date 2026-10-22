@@ -72,17 +72,16 @@ import sys
 import shutil
 import tempfile
 import traceback
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
 from datetime import datetime
 from inspect import signature
 from pathlib import Path
 from string import Template
 from subprocess import Popen
-from typing import Any, ClassVar, TypeAlias, TYPE_CHECKING
+from typing import Any, ClassVar, TYPE_CHECKING
 from os import PathLike
 from .developer import DevBase, obj, FileFormatError, NexusError
-from .developer_tools import Unset
 from .structure import Structure, read_structure
 from .physical_system import PhysicalSystem
 from .machines import Job, Workstation, get_machine
@@ -90,10 +89,9 @@ from .nexus_base import NexusCore, nexus_config, SimStage, dynamic_storage
 from .utilities import path_string
 
 if TYPE_CHECKING:
-    from .bundle import SimulationBundle
     from .qmcpack_analyzer import QmcpackAnalysisRequest
 
-StrPath: TypeAlias = str
+type StrPath = str
 
 
 class SimulationInput(NexusCore):
@@ -819,7 +817,7 @@ class Simulation(NexusCore):
     #end def create_directories
 
 
-    def depends(self,*dependencies):
+    def depends(self, *dependencies: tuple[Simulation, str]):
         if nexus_config.dynamic:
             msg = 'dynamic workflows do not allow explicit dependencies between simulations'
             raise ValueError(msg)
@@ -1363,11 +1361,12 @@ class Simulation(NexusCore):
     #end def analyze
 
 
-    def reset_wait_ids(self):
+    def reset_wait_ids(self, *, dependents: bool = True):
         self.wait_ids = set(self.dependency_ids)
-        for sim in self.dependents.values():
-            sim.reset_wait_ids()
-        #end for
+        if dependents:
+            for sim in self.dependents.values():
+                sim.reset_wait_ids()
+            #end for
     #end def reset_wait_ids
 
 
@@ -1394,9 +1393,16 @@ class Simulation(NexusCore):
     #end def block_dependents
 
 
-    def progress(self,dependency_id=None):
+    def progress(
+        self,
+        dependency_id: int | set | None = None,
+        *,
+        dependents: bool = True,
+    ):
         if dependency_id is not None:
-            self.wait_ids.remove(dependency_id)
+            if isinstance(dependency_id, int):
+                dependency_id = {dependency_id}
+            self.wait_ids -= (set(dependency_id))
 
         if len(self.wait_ids) > 0:
             return
@@ -1415,11 +1421,12 @@ class Simulation(NexusCore):
             return
 
         progress = True
-        if not self.created_directories:
-            self.create_directories()
+        if dependents:
+            if not self.created_directories:
+                self.create_directories()
 
-        if not self.got_dependencies:
-            self.get_dependencies()
+            if not self.got_dependencies:
+                self.get_dependencies()
 
         if (
             not self.setup
@@ -1458,7 +1465,7 @@ class Simulation(NexusCore):
                 ):
                 self.analyze()
 
-        if progress and not (self.block_subcascade or self.failed):
+        if dependents and progress and not (self.block_subcascade or self.failed):
             for sim in self.dependents.values():
                 if not sim.bundled:
                     with sim_err_handler(sim), sim_log_handler(sim):
@@ -1466,7 +1473,7 @@ class Simulation(NexusCore):
     #end def progress
 
 
-    def reconstruct_cascade(self):
+    def reconstruct_cascade(self, *, dependents: bool = True):
         imagefile = os.path.join(self.imlocdir,self.sim_image)
         if os.path.exists(imagefile) and not self.loaded:
             self.load_image()
@@ -1484,24 +1491,39 @@ class Simulation(NexusCore):
             #end if
             self.loaded = True
         #end if
-        for sim in self.dependents.values():
-            sim.reconstruct_cascade()
-        #end for
+        if dependents:
+            for sim in self.dependents.values():
+                sim.reconstruct_cascade()
+            #end for
         return self
     #end def reconstruct_cascade
 
 
-    def traverse_cascade(self,operation,*args,**kwargs):
-        if 'dependency_id' in kwargs:
-            self.wait_ids.remove(kwargs['dependency_id'])
-            del kwargs['dependency_id']
+    def traverse_cascade(
+        self,
+        operation: Callable[[Simulation, Any], None],
+        *args,
+        dependency_id: int | set[int] | None = None,
+        dependents: bool = True,
+        **kwargs,
+    ):
+        if dependency_id is not None:
+            if isinstance(dependency_id, int):
+                dependency_id = {dependency_id}
+            self.wait_ids -= (set(dependency_id))
         #end if
         if len(self.wait_ids)==0:
             operation(self,*args,**kwargs)
-            for sim in self.dependents.values():
-                kwargs['dependency_id'] = self.simid
-                sim.traverse_cascade(operation,*args,**kwargs)
-            #end for
+            if dependents:
+                for sim in self.dependents.values():
+                    sim.traverse_cascade(
+                        operation,
+                        *args,
+                        dependency_id=self.simid,
+                        **kwargs,
+                    )
+                #end for
+            #end if
         #end if
     #end def traverse_cascade
 

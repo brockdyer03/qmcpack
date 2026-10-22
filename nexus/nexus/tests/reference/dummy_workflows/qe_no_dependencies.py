@@ -44,7 +44,7 @@ scf = generate_pwscf(
     kshift       = (0,0,0),
 )
 
-run_project()
+run_project(new_sim_cascade=False)
 
 analyzer = analyze_output(scf)
 analyzer_data = {

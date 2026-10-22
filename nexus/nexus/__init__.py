@@ -88,7 +88,7 @@ def run_project(*args,**kwargs):
     #end if
     pm = ProjectManager()
     pm.add_simulations(*args,**kwargs)
-    pm.run_project()
+    pm.run_project(*args,**kwargs)
     return pm
 #end def run_project
 

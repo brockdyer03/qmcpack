@@ -14,18 +14,23 @@
 #      Works closely with Simulation, Machine, and Job objects.      #
 #                                                                    #
 #====================================================================#
-
+from __future__ import annotations
 
 import gc
 import os
 import sys
 import time
-from typing import ClassVar,Literal,TextIO
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, Self, TextIO
+
 from . import memory
-from .developer import obj, NexusError
-from .nexus_base import NexusCore, ShowStatusMode, nexus_config, dynamic_storage
-from .simulation import Simulation, sim_err_handler, sim_log_handler
-from .machines import Machine,Job
+from .developer import NexusError, obj
+from .machines import Job, Machine
+from .nexus_base import NexusCore, ShowStatusMode, dynamic_storage, nexus_config
+from .simulation import DynamicProcess, Simulation, sim_err_handler, sim_log_handler
+
+type SimID = int
 
 
 def color_status_result(result: Literal['SUCCESS','FAILURE'] | str,logfile: TextIO) -> str:
@@ -69,9 +74,9 @@ class ProjectManager(NexusCore):
     #end def __init__
 
 
-    def add_simulations(self,*simulations):
+    def add_simulations(self, *simulations: Simulation, new_sim_cascade: bool = False):
         if len(simulations)==0:
-            self.add_simulations(Simulation.all_sims)
+            self.add_simulations(Simulation.all_sims, new_sim_cascade=new_sim_cascade)
         #end if
         if len(simulations)>0 and not isinstance(simulations[0],Simulation):
             simulations = simulations[0]
@@ -79,7 +84,7 @@ class ProjectManager(NexusCore):
         for sim in simulations:
             if not sim.fake():
                 if len(sim.dependencies)==0:
-                    self.add_cascade(sim)
+                    self.add_cascade(sim, new_sim_cascade=new_sim_cascade)
                 #end if
                 self.simulations[sim.simid]=sim
             #end if
@@ -87,14 +92,25 @@ class ProjectManager(NexusCore):
     #end def add_simulations
 
 
-    def add_cascade(self,cascade):
-        cid = cascade.simid
+    def add_cascade(self, cascade: Simulation, *, new_sim_cascade: bool = False):
+        if new_sim_cascade:
+            cascade = Cascade(cascade)
+            cid = len(self.cascades)
+        else:
+            cid = cascade.simid
+
         self.cascades[cid]=cascade
         self.progressing_cascades[cid]=cascade
     #end def add_cascade
 
 
-    def run_project(self,*,status=False,status_only=False):
+    def run_project(
+        self,
+        *,
+        status: bool = False,
+        status_only: bool = False,
+        new_sim_cascade: bool = False,
+    ):
         self.nxs_print('\nProject starting',n=0)
         self.init_cascades()
         status_only = status_only or nexus_config.status_only
@@ -121,7 +137,7 @@ class ProjectManager(NexusCore):
                     NexusCore.wrote_something = False
                     ipoll+=1
                     self.machine.query_queue()
-                    self.progress_cascades()
+                    self.progress_cascades(new_sim_cascade=new_sim_cascade)
                     self.machine.submit_jobs()
                     self.update_process_ids()
                     time.sleep(nexus_config.sleep)
@@ -134,7 +150,7 @@ class ProjectManager(NexusCore):
                 #end while
             elif len(self.progressing_cascades)>0:
                 self.machine.query_queue()
-                self.progress_cascades()
+                self.progress_cascades(new_sim_cascade=new_sim_cascade)
                 self.machine.submit_jobs()
                 self.update_process_ids()
             #end if
@@ -363,16 +379,27 @@ class ProjectManager(NexusCore):
     #end def status_line
 
 
-    def progress_cascades(self):
+    def progress_cascades(self, *, new_sim_cascade: bool = False):
         gc.collect()
         finished = []
         progressing_cascades = self.progressing_cascades
         for cascade in progressing_cascades.values():
+            if new_sim_cascade:
+                cascade.reset_wait_ids()
+                continue
             # Use error and log handlers to redirect output and prevent total crashes
             with sim_err_handler(sim=cascade), sim_log_handler(sim=cascade):
                 cascade.reset_wait_ids()
         #end for
         for cid,cascade in progressing_cascades.items():
+            if new_sim_cascade:
+                if not cascade.bundled or cascade.bundler.finished:
+                    cascade.progress()
+
+                cascade.check_subcascade()
+                if cascade.subcascade_finished:
+                    finished.append(cid)
+                continue
             # Use error and log handlers to redirect output and prevent total crashes
             with sim_err_handler(sim=cascade), sim_log_handler(sim=cascade):
                 if not cascade.bundled or cascade.bundler.finished:
@@ -396,7 +423,7 @@ class ProjectManager(NexusCore):
 
 
     # test needed
-    def write_sim_dependencies(self,idkey=None):
+    def write_sim_dependencies(self, idkey: str | None = None):
         for simid in sorted(self.simulations.keys()):
             sim = self.simulations[simid]
             if idkey is None or sim.identifier==idkey:
@@ -425,7 +452,227 @@ class ProjectManager(NexusCore):
     #end def write_cascade_dependents
 #end class ProjectManager
 
+@dataclass
+class SimDependency:
+    cascade_id: int
+    simid: SimID
+    result_names: tuple[str]
 
+    @property
+    def finished(self) -> bool:
+        return (
+            self.sim.finished
+            and self.sim.analyzed
+            and not (self.sim.block_subcascade or self.sim.failed)
+        )
+
+    @property
+    def sim(self) -> Simulation:
+        return Simulation.all_sims[self.simid]
+#end class Dependency
+
+
+@dataclass
+class CascadeNode:
+    """A single node in a workflow."""
+
+    node_id: int
+    """Integer identifier for this node."""
+
+    simid: SimID
+    """An ID for a simulation with zero or more dependents/dependencies."""
+
+    dependencies: list[SimDependency]
+    """Upstream simulations IDs of sims that :attr:`sim` depends on."""
+
+    @property
+    def waiting(self) -> bool:
+        return len(self.sim.wait_ids) > 0
+
+    @property
+    def finished(self) -> bool:
+        return (
+            self.sim.finished
+            and self.sim.analyzed
+            and not self.sim.failed
+        )
+
+    @property
+    def sim(self) -> Simulation:
+        return Simulation.all_sims[self.simid]
+
+    def get_dependencies(self):
+        if self.sim.got_dependencies or len(self.dependencies) == 0:
+            return
+
+        for dep in self.dependencies:
+            sim = dep.sim
+            useable_results = [
+                r_name for r_name in dep.result_names if r_name != "other"
+            ]
+            if (
+                len(useable_results) > 0
+                and (sim.has_generic_input() or self.sim.has_generic_input())
+            ):
+                action = "inferred" if sim.has_generic_input() else "incorporated"
+                msg = (
+                    f"A simulation result cannot be {action} from generically formatted or template input!\n"
+                    f"Please use {self.input_type.__name__} instead of {type(sim.input).__name__}\n"
+                    f"Sim id: {sim.id}\n"
+                    f"Directory: {sim.locdir}\n"
+                    f"Results: {useable_results}"
+                )
+                raise ValueError(msg)
+
+            for result_name in useable_results:
+                result = sim.get_result(result_name, sim)
+                self.sim.incorporate_result(
+                    result_name=result_name,
+                    result=result,
+                    sim=sim,
+                )
+#end class WorkflowNode
+
+
+class Cascade(NexusCore):
+    """Handler for simulation cascades (dependency trees)."""
+
+    nodes: dict[int, CascadeNode]
+    completed_nodes: list[int]
+    cascade_finished: bool
+    bundled: Literal[False] = False
+
+    @property
+    def simid(self) -> int:
+        return next(iter(self.nodes.values())).simid
+
+    def __init__(self, parent_sim: Simulation):
+        if isinstance(parent_sim, DynamicProcess):
+            msg = "Dynamic runs are not supported yet!"
+            raise NotImplementedError(msg)
+        elif not isinstance(parent_sim, Simulation):
+            msg = "Received non-Simulation object!"
+            raise TypeError(msg)
+
+        self.cascade_finished = False
+
+        cascade_sims = Cascade._init_cascade_sims(parent_sim)
+        cascade_sims = {
+            k: v for k, v in sorted(cascade_sims.items(), key=lambda k: k[0])
+        }
+        sim_node_map = {}
+        self.nodes = {}
+        for node_id, (simid, sim) in enumerate(cascade_sims.items()):
+            sim_node_map[simid] = node_id
+            if len(sim.dependencies) > 0:
+                dependencies = [
+                    SimDependency(
+                        cascade_id=sim_node_map[dep_id],
+                        simid=dep_id,
+                        result_names=dep.result_names,
+                    )
+                    for dep_id, dep in sim.dependencies.items()
+                ]
+            else:
+                dependencies = []
+
+            self.nodes[node_id] = CascadeNode(
+                node_id=node_id,
+                simid=simid,
+                dependencies=dependencies,
+            )
+
+        self.completed_nodes = []
+
+    @staticmethod
+    def _init_cascade_sims(
+        sim: Simulation,
+        cascade_sims: dict[SimID, Simulation] | None = None,
+    ) -> dict[SimID, Simulation]:
+        if cascade_sims is None:
+            cascade_sims = {sim.simid: sim}
+        else:
+            cascade_sims.update({sim.simid: sim})
+
+        for dep in sim.dependents.values():
+            Cascade._init_cascade_sims(dep, cascade_sims=cascade_sims)
+
+        return cascade_sims
+
+    def reset_wait_ids(self) -> None:
+        for node in self.nodes.values():
+            node.sim.reset_wait_ids(dependents=False)
+
+    def traverse_cascade(
+        self,
+        operation: Callable[[Simulation, Any], None],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self.reset_wait_ids()
+        for node in self.nodes.values():
+            if node.node_id == 0:
+                node.sim.traverse_cascade(
+                    operation,
+                    *args,
+                    dependency_id=None,
+                    dependents=False,
+                    **kwargs,
+                )
+                continue
+
+            dep_ids = {dep.simid for dep in node.dependencies if dep.finished}
+            node.sim.traverse_cascade(
+                operation,
+                *args,
+                dependency_id=dep_ids,
+                dependents=False,
+                **kwargs,
+            )
+
+    def progress(self) -> None:
+        for node_id, node in self.nodes.items():
+            if node_id in self.completed_nodes:
+                continue
+
+            node.sim.wait_ids -= {
+                dep.simid for dep in node.dependencies if dep.finished
+            }
+            if node.waiting:
+                continue
+            sim = node.sim
+            with sim_err_handler(sim=sim), sim_log_handler(sim=sim):
+                if not sim.created_directories:
+                    sim.create_directories()
+
+                if not sim.got_dependencies:
+                    node.get_dependencies()
+
+                dep_ids = {dep.simid for dep in node.dependencies if dep.finished}
+
+                sim.progress(dependency_id=dep_ids, dependents=False)
+                if node.finished:
+                    self.completed_nodes.append(node_id)
+
+    def reconstruct_cascade(self) -> Self:
+        for node in self.nodes.values():
+            node.sim.reconstruct_cascade(dependents=False)
+        return self
+
+    def check_subcascade(self) -> bool:
+        self.cascade_finished = all(node.finished for node in self.nodes.values())
+        return self.cascade_finished
+
+    @property
+    def subcascade_finished(self) -> bool:
+        return self.cascade_finished
+
+    def __repr__(self) -> str:
+        rep = ""
+        for node in self.nodes.values():
+            rep += f"{node.node_id}: {node}"
+        return rep
+#end class SimCascade
 
 
 class DynamicWorkflowManager(NexusCore):
