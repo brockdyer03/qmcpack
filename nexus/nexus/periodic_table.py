@@ -5,8 +5,11 @@
 """Classes and methods for getting data and properties of elements."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal, overload
+
 from .developer import warn
 
 
@@ -19,7 +22,7 @@ class ElementData:
     group: int
     isotopes: dict[int, float]
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((
             self.symbol,
             self.atomic_number,
@@ -45,7 +48,7 @@ class ElementData:
         ----------
         .. [1] https://www.nist.gov/pml/atomic-weights-and-isotopic-compositions-relative-atomic-masses
         """
-        mass_number = list(self.isotopes.keys())[0]
+        mass_number = next(iter(self.isotopes))
         return mass_number, self.isotopes[mass_number]
 
     def protons(self) -> int:
@@ -64,7 +67,7 @@ class ElementData:
         """
         if mass_number is None:
             mass_number = self.principle_isotope()[0]
-        elif mass_number not in self.isotopes.keys():
+        elif mass_number not in self.isotopes:
             warn(
                 f"Mass number {mass_number} is not in the known isotopes for {self.name}.\n"
                 "Will proceed with given mass number, but you may want to check your inputs!"
@@ -176,11 +179,11 @@ class Elements(ElementData, Enum):
 
     def __new__(
         cls,
-        symbol: str,
+        symbol: str,  # noqa: ARG004
         atomic_number: int,
-        atomic_weight: float,
-        group: int,
-        isotopes: dict[int, float]
+        atomic_weight: float,  # noqa: ARG004
+        group: int,  # noqa: ARG004
+        isotopes: dict[int, float],  # noqa: ARG004
         ):
         element = ElementData.__new__(cls)
         element._value_ = atomic_number
@@ -205,9 +208,10 @@ class Elements(ElementData, Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Workaround to not having access to ``_add_alias_`` or
-        ``_add_value_alias_`` from Python 3.13. This function
-        automatically gets called when the traditional lookup fails.
+        """Workaround to not having any alias abilities from Python 3.13.
+
+        This function automatically gets called when the traditional lookup
+        fails.
         """
         if isinstance(value, str):
             value = value.strip()
@@ -225,7 +229,20 @@ class Elements(ElementData, Enum):
                 if isinstance(value, int) and value <= cls.num_elements():
                     return cls._value2member_map_[value]
 
-        raise ValueError(f"Can not determine element for input value: {value}!")
+        msg = f"Can not determine element for input value: {value}!"
+        raise ValueError(msg)
+
+    @overload
+    @staticmethod
+    def is_element(
+        value: str,
+        *,
+        return_element: Literal[True]
+        ) -> tuple[bool, Elements]: ...
+
+    @overload
+    @staticmethod
+    def is_element(value: str, *, return_element: Literal[False]) -> bool: ...
 
     @staticmethod
     def is_element(
