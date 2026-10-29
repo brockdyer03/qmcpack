@@ -110,15 +110,34 @@ class ProjectManager(NexusCore):
             #end if
         #end if
         self.nxs_print('\nStarting runs:\n'+30*'~',n=1)
+        if nexus_config.progress_tty:
+            self.nxs_print("\n")
         if nexus_config.dependent_modes in nexus_config.stages:
             if nexus_config.monitor:
                 ipoll = 0
+                # At most every 30 minutes, at least every 10 sleep cycles
+                summary_interval = min(1800, 10*nexus_config.sleep)
+                last_summary = dt.datetime.now().astimezone()
                 while len(self.progressing_cascades)>0:
-                    self.nxs_print(
-                        self.progress_line(start_time),
-                        n=1,
-                        progress=True,
-                        )
+                    if nexus_config.progress_tty:
+                        self.nxs_print(
+                            (
+                                f"{self.progress_line(start_time)}\n"
+                                f"{self.sim_summary()}"
+                            ),
+                            n=1,
+                            progress=1,
+                            )
+                    else:
+                        self.nxs_print(
+                            self.progress_line(start_time),
+                            n=1,
+                            progress=1,
+                            )
+                        now = dt.datetime.now().astimezone()
+                        if (now - last_summary).total_seconds() > summary_interval:
+                            self.nxs_print(self.sim_summary(), n=1)
+                            last_summary = now
                     NexusCore.wrote_something = False
                     ipoll+=1
                     self.machine.query_queue()
@@ -128,9 +147,14 @@ class ProjectManager(NexusCore):
                     time.sleep(nexus_config.sleep)
                     if NexusCore.wrote_something:
                         if nexus_config.progress_tty:
-                            self.nxs_print("\n")
+                            self.nxs_print()
+                            self.nxs_print(self.sim_summary(), n=1)
+                            self.nxs_print("\n\n")
                         else:
                             self.nxs_print()
+                            self.nxs_print(self.sim_summary(), n=1)
+                            self.nxs_print()
+                        last_summary = dt.datetime.now().astimezone()
                     #end if
                 #end while
             elif len(self.progressing_cascades)>0:
@@ -381,6 +405,36 @@ class ProjectManager(NexusCore):
         )
         return msg
     #end def progress_line
+
+    simulations: dict[int, Simulation]
+    def sim_summary(self) -> str:
+        # jobs status: successful: 34  pending: 12  blocked: 32  failed: 23
+        finished = 0
+        pending  = 0
+        blocked  = 0
+        failed   = 0
+        unknown  = 0
+        for sim in self.simulations.values():
+            if sim.failed:
+                failed += 1
+            elif sim.finished:
+                finished += 1
+            elif sim.block:
+                blocked += 1
+            elif not sim.submitted:
+                pending += 1
+            else:
+                unknown += 1
+
+        return (
+            "Sim Summary - "
+            f"Finished: {finished} "
+            f"Pending: {pending} "
+            f"Blocked: {blocked} "
+            f"Failed: {failed}"
+        )
+    #end def sim_summary
+
 
 
     def progress_cascades(self):

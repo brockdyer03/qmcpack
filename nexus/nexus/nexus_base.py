@@ -375,26 +375,27 @@ class NexusCore(DevBase):
     wrote_something   = False # for pretty printing
     working_directory = None
 
-    def nxs_print(self, *texts: str, n: int = 0, progress: bool = False):
+    def nxs_print(self, *texts: str, n: int = 0, progress: int = 0):
         """Write text to standard output.
 
         Parameters
         ----------
         *texts
             Strings that will be joined by newline characters.
-        n : int, kwargs
+        n : int, default=0
             Spaces to indent by.
-        progress : bool, kwargs
-            If ``True`` and output is to a terminal, overwrite and update the
-            last line, rather than scrolling.
+        progress : int, default=0
+            If greater than zero and output is to a terminal, overwrite and
+            update the last ``progress`` lines, rather than scrolling.
         """
         if not nexus_config.quiet:
             text = ' '.join(str(t) for t in texts)
             output_text = textwrap.indent(text, n * nexus_config.indent)
-            if nexus_config.progress_tty and progress and sys.stdout.isatty():
+            if nexus_config.progress_tty and progress > 0 and sys.stdout.isatty():
                 # Line up + Line clear ANSI sequence
-                sys.stdout.write('\033[1A'+'\x1b[2K')
-                sys.stdout.write(output_text+"\n")
+                for _ in range(progress + 1):
+                    sys.stdout.write('\033[1A'+'\x1b[2K')
+                sys.stdout.write(output_text + ("\n" * progress))
                 sys.stdout.flush()
             else:
                 sys.stdout.write(output_text+'\n')
