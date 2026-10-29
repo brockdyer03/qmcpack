@@ -85,9 +85,18 @@ class SimTool:
 
     fields = frozenset(indicators)
 
-    def __init__(self, paths: list[Path]):
+    def vprint(self, msg: str):
+        if self.verbose:
+            print(msg)
+
+    def __init__(self, paths: list[Path], *, verbose: bool):
         self.paths = paths
+        self.verbose = verbose
+        self.vprint("Loading sim images:")
+        for pth in self.paths:
+            self.vprint(f"  ./{pth.relative_to(Path.cwd(), walk_up=True)}")
         self.sims = [load(path) for path in self.paths]
+        self.vprint("Done!")
     #end def __init__
 
 
@@ -117,7 +126,9 @@ class SimTool:
     def backup(self):
         for path in self.paths:
             backup_file = path.parent / f"backup_{path.name}"
-            print(f"Creating backup of {path}")
+            self.vprint(
+                f"Creating backup of ./{path.relative_to(Path.cwd(), walk_up=True)}"
+            )
             shutil.copy(path, backup_file)
     #end def backup
 
@@ -125,18 +136,29 @@ class SimTool:
     def restore(self):
         for path in self.paths:
             backup_file = path.parent / f"backup_{path.name}"
-            print(f"Restoring backup of {path}")
+            self.vprint(
+                f"Restoring backup of ./{path.relative_to(Path.cwd(), walk_up=True)}"
+            )
             shutil.copy(backup_file, path)
     #end def restore
 
 
     def set_indicators(self, inds: Sequence[str], *, val: bool = True):
         for i, path in enumerate(self.paths):
+            self.vprint(f"./{path.relative_to(Path.cwd(), walk_up=True)}")
             sim = self.sims[i]
+            spacing = max(map(len, inds)) + 1
             for ind in inds:
-                sim[ind] = val
                 if ind == "submitted" and val is False:
+                    self.vprint(
+                        f"  {ind + ':':<{spacing}} {sim[ind]} -> {val} "
+                        "(and setting sim.process_id to None)"
+                    )
                     sim.process_id = None
+                else:
+                    self.vprint(f"  {ind + ':':<{spacing}} {sim[ind]} -> {val}")
+
+                sim[ind] = val
             save(sim, path)
     #end def set_indicators
 #end class SimTool
@@ -160,7 +182,7 @@ if __name__ == "__main__":
             `reset`:    Reset all simulation status flags.
             `set`:      Set the specified simulation status flags to `True`.
             `unset`:    Set the specified simulation status flags to `False`.
-            `backup`:   Make a backup of the specified simulation pickle at `sim_backup.p`
+            `backup`:   Make a backup of the specified simulation pickle at `sim_backup.p`.
             `restore`:  Take a backup of the specified simulation pickle at `sim_backup.p`
                       and rename it back to `sim.p`.
         """),
@@ -191,11 +213,18 @@ if __name__ == "__main__":
         ),
         default=Path("./sim.p"),
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print detailed information. (default: %(default)s)"
+    )
 
     args = parser.parse_args()
 
     command: str = args.command
     paths_or_inds: list[str] = args.paths_or_inds
+    verbose: bool = args.verbose
 
     paths: list[Path] = []
     indicators: list[str] = []
@@ -231,7 +260,7 @@ if __name__ == "__main__":
         msg = "No simulation images found!"
         parser.exit(1, message=msg)
 
-    st = SimTool(paths)
+    st = SimTool(paths, verbose=verbose)
 
     match command:
         case "show":
