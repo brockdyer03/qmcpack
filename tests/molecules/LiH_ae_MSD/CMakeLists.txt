@@ -21,6 +21,18 @@ if(NOT QMC_COMPLEX)
     LiH_ae_MSD_NOJ_SHORT_SCALARS #VMC
   )
 
+  qmc_run_and_check(
+    short-LiH_ae-vmcbatch_msdj_noj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_short_noj
+    vmcbatch_short_noj.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_NOJ_SHORT_SCALARS #VMC
+  )
+
   #
   # VMC short run with Jastrows and Truncated WF
   # Reference VMC run in qmc-ref-vmc-short.s000.scalar.dat
@@ -44,6 +56,18 @@ if(NOT QMC_COMPLEX)
     LiH_ae_MSD_SHORT_SCALARS # VMC
   )
 
+  qmc_run_and_check(
+    short-LiH_ae-vmcbatch_msdj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_short
+    vmcbatch_short.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_SHORT_SCALARS # VMC
+  )
+
   #
   # VMC short run with Jastrows and optimized 184 determinants read from previously saved coefficients
   # Purpose: Reading and Replacing optimized Coeffs from previously optimized run.
@@ -55,10 +79,22 @@ if(NOT QMC_COMPLEX)
   list(APPEND LiH_ae_MSD_OPT_CI_SHORT_SCALARS "eeenergy" "3.346222009202 0.002397327879")
   list(APPEND LiH_ae_MSD_OPT_CI_SHORT_SCALARS "ionion" "0.995380119260 0.001000000000")
   qmc_run_and_check(
-    short-LiH_ae-vmc_msdj_optCI
+    short-LiH_ae-msdj_optCI-vmc
     "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
     vmc_short_opt_CI
     vmc_short_opt_CI.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_OPT_CI_SHORT_SCALARS # VMC
+  )
+
+  qmc_run_and_check(
+    short-LiH_ae-msdj_optCI-vmcbatch
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_short_opt_CI
+    vmcbatch_short_opt_CI.in.xml
     1
     16
     TRUE
@@ -89,6 +125,18 @@ if(NOT QMC_COMPLEX)
     LiH_ae_MSD_SCALARS # VMC
   )
 
+  qmc_run_and_check(
+    long-LiH_ae-vmcbatch_msdj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_long
+    vmcbatch_long.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_SCALARS # VMC
+  )
+
   #
   # VMC Long run with no Jastrows and UN-Truncated WF
   # Compare directly to sCI Variational Energy of: E=-8.04250444504137
@@ -111,6 +159,18 @@ if(NOT QMC_COMPLEX)
     0
     LiH_ae_MSD_NOJ_SCALARS # VMC
   )
+
+  qmc_run_and_check(
+    long-LiH_ae-vmcbatch_msdj_noj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_long_noj
+    vmcbatch_long_noj.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_NOJ_SCALARS # VMC
+  )
   #
   # VMC Long run with Jastrows and optimized 184 determinants read from previously saved coefficients
   # Purpose: Reading and Replacing optimized Coeffs from previously optimized run.
@@ -122,10 +182,22 @@ if(NOT QMC_COMPLEX)
   list(APPEND LiH_ae_MSD_OPT_CI_SCALARS "eeenergy" "3.346222009202 0.000692976585")
   list(APPEND LiH_ae_MSD_OPT_CI_SCALARS "ionion" "0.995380119260 0.001000000000")
   qmc_run_and_check(
-    long-LiH_ae-vmc_msdj_optCI
+    long-LiH_ae-msdj_optCI-vmc
     "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
     vmc_long_opt_CI
     vmc_long_opt_CI.in.xml
+    1
+    16
+    TRUE
+    0
+    LiH_ae_MSD_OPT_CI_SCALARS # VMC
+  )
+
+  qmc_run_and_check(
+    long-LiH_ae-msdj_optCI-vmcbatch
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    vmc_long_opt_CI
+    vmcbatch_long_opt_CI.in.xml
     1
     16
     TRUE
@@ -146,6 +218,21 @@ if(NOT QMC_COMPLEX)
     1
     TRUE)
 
+  simple_run_and_check(
+    deterministic-ensemble_blocks_LiH_ae-vmcbatch_msdj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    det_ensemble_blocks_vmcbatch_msdj.txt
+    4
+    1
+    check_ensemble.py
+    --ranks
+    4
+    --prefix
+    det_ensemble_blocks_vmc_msdj
+    --ionion
+    0.995380119260
+  )
+
   qmc_run_and_check(
     deterministic-ensemble_blocks_LiH_ae-vmc_msdj
     "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
@@ -163,6 +250,21 @@ if(NOT QMC_COMPLEX)
     5
     1
     TRUE)
+
+  simple_run_and_check(
+    deterministic-ensemble_blocks_LiH_ae-vmcbatch_msdj
+    "${qmcpack_SOURCE_DIR}/tests/molecules/LiH_ae_MSD"
+    det_ensemble_blocks_vmcbatch_msdj.txt
+    5
+    1
+    check_ensemble.py
+    --ranks
+    5
+    --prefix
+    det_ensemble_blocks_vmc_msdj
+    --ionion
+    0.995380119260
+  )
 
 
   # self-healing deterministic vmc tests

@@ -33,7 +33,7 @@ import os
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from types import MappingProxyType
-from typing import ClassVar, Literal, TypeAlias
+from typing import ClassVar, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -51,7 +51,6 @@ from .pwscf_input_defs import (
     ElectronsDefinitions,
     FcpDefinitions,
     IonsDefinitions,
-    PwscfInputType,
     RismDefinitions,
     SystemDefinitions,
 )
