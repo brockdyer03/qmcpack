@@ -27,13 +27,19 @@ Card
       cell_parameters, climbing_images, constraints,
       collective_vars, occupations and hubbard.
 """
+from __future__ import annotations
 
+import difflib
 import inspect
-import os
-from collections.abc import Callable, Mapping
+import re
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
+from os import PathLike
+from pathlib import Path
+from re import Pattern
 from types import MappingProxyType
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, Literal, Self, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -41,16 +47,19 @@ from numpy import pi
 from numpy.linalg import inv
 
 from . import numpy_extensions as npe
-from .developer import DevBase, nxs_print, obj, warn, NexusError, FileFormatError
+from .developer import DevBase, FileFormatError, NexusError, NotAnElementError, obj, warn
+from .developer_tools import unset
+from .generic import nxs_deprecate
 from .periodic_table import Elements
 from .physical_system import PhysicalSystem
-from .pseudoset import pp_elem_label, PseudoSet
+from .pseudoset import PseudoSet, pp_elem_label
 from .pwscf_input_defs import (
     CellDefinitions,
     ControlDefinitions,
     ElectronsDefinitions,
     FcpDefinitions,
     IonsDefinitions,
+    PwscfInputType,
     RismDefinitions,
     SystemDefinitions,
 )
@@ -59,17 +68,17 @@ from .structure import Structure, kmesh
 from .unit_converter import convert
 
 """Union of all Namelist definition enums."""
-NamelistType: TypeAlias = (
-    type[CellDefinitions]
-    | type[ControlDefinitions]
-    | type[ElectronsDefinitions]
-    | type[FcpDefinitions]
-    | type[IonsDefinitions]
-    | type[RismDefinitions]
-    | type[SystemDefinitions]
-    )
+type NamelistDefType = type[
+    CellDefinitions
+    | ControlDefinitions
+    | ElectronsDefinitions
+    | FcpDefinitions
+    | IonsDefinitions
+    | RismDefinitions
+    | SystemDefinitions
+]
 
-NamelistName: TypeAlias = Literal[
+type NamelistName = Literal[
     "control",
     "system",
     "electrons",
@@ -77,6 +86,17 @@ NamelistName: TypeAlias = Literal[
     "cell",
     "fcp",
     "rism",
+]
+
+type CardName = Literal[
+    "atomic_species",
+    "atomic_positions",
+    "atomic_forces",
+    "k_points",
+    "cell_parameters",
+    "constraints",
+    "occupations",
+    "hubbard",
 ]
 
 
@@ -147,6 +167,150 @@ READ_VAL_MAP = MappingProxyType({
     bool : read_bool,
     })
 
+class PwscfInputParser:
+
+    num_patterns = MappingProxyType(
+        {
+            # e.g. 1.234e5
+            "point": r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?",
+            # e.g. 1,234e5
+            "comma": r"[+-]?(?:\d+(?:,\d*)?|,\d+)(?:[eEdD][+-]?\d+)?",
+        }
+    )
+    complex_patterns = MappingProxyType(
+        {
+            # Two floats in parentheses, separated by a comma
+            "point": r"\(" + num_patterns["point"] + r" *, *" + num_patterns["point"] + r"\)",
+            # Two floats in parentheses, separated by a semicolon
+            "comma": r"\(" + num_patterns["comma"] + r" *; *" + num_patterns["comma"] + r"\)"
+        }
+    )
+    string_patterns = MappingProxyType(
+        {
+            # delim='none' means the strings do not have surrounding single or double quote
+            "none": {
+                # decimal="point" means it can't contain commas
+                "point": r"([^\s=$/&!,]+[\s=$/&!,])",
+                # decimal="comma" means it can't contain semicolons
+                "comma": r"([^\s=$/&!;]+[\s=$/&!;])",
+            },
+            # Match anything inside paired quotes (`?s:` means dot matches all, including newline)
+            "quotes": r"'(?s:.*?)'|\"(?s:.*?)\"",
+        }
+    )
+
+    decimal: Literal["point", "comma"]
+    delim: Literal["quotes", "none"]
+    patterns: dict[Literal["number", "bool", "complex", "string", "group"], Pattern]
+
+    def __init__(
+        self,
+        decimal: Literal["point", "comma"] = "point",
+        delim:   Literal["quotes", "none"] = "quotes",
+    ):
+        if decimal.lower() not in {"point", "comma"}:
+            msg = f"decimal must be one of 'point' or 'comma' but is '{decimal}'!"
+            raise ValueError(msg)
+        else:
+            decimal = decimal.lower()
+
+        if delim.lower() not in {"quotes", "none"}:
+            msg = f"delim must be one of 'quotes' or 'none' but is '{delim}'!"
+            raise ValueError(msg)
+        else:
+            delim = delim.lower()
+
+        if delim == "none":
+            string_pat = PwscfInputParser.string_patterns[delim][decimal]
+        else:
+            string_pat = PwscfInputParser.string_patterns[delim]
+
+        self.decimal = decimal
+        self.delim = delim
+        self.patterns = {
+            "number": re.compile(PwscfInputParser.num_patterns[decimal]),
+            # e.g. `.true.` or `.false.`, the `?i:` makes it case-insensitive
+            "bool": re.compile(r"(?i:(?:\.true\.|\.false\.|\.?[tTfF]))"),
+            "complex": re.compile(PwscfInputParser.complex_patterns[decimal]),
+            "string": re.compile(string_pat),
+            # Use `a-zA-Z` over `\w` beause it can't start with an underscore
+            "group": re.compile(r"^&[a-zA-Z$][\w$]*"),
+        }
+
+    def read_text(self, text: str):
+        text = re.sub(r"!.*?\n", "\n", text) # Remove all comments
+        # Move multiple variables on the same line separated by a comma
+        # onto separate lines
+        text = re.sub(r",([^0-9\n])", r",\n\1", text)
+        current_group = None
+        groups = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if line == "":
+                continue
+
+            if (group := re.search(self.patterns["group"], line)) is not None:
+                current_group = group.group().strip("&")
+                groups[current_group] = {}
+                continue
+            elif line.strip() == "/" or current_group is None:
+                current_group = None
+                continue
+
+            if len(line.split("=")) == 1:
+                print(line)
+            key, value = line.split("=")
+            key = key.strip().lower()
+            value = self._parse_value(value)
+            if "(" in key:
+                key, index = key.split("(")
+                index = tuple(map(int, index.strip(")").split(",")))
+                if len(index) == 1:
+                    index = index[0]
+                if key not in groups[current_group]:
+                    groups[current_group][key] = {}
+
+                groups[current_group][key][index] = value
+            else:
+                groups[current_group][key] = value
+
+        return groups
+
+    def _parse_value(self, val_str: str) -> str | bool | int | float | complex:
+        val_str = val_str.strip(", \n").lower()
+        for dtype, pattern in self.patterns.items():
+            value = re.match(pattern, val_str)
+            if value is None:
+                continue
+            else:
+                value = value.group()
+
+            if dtype == "number":
+                value = float(value.replace("d", "e"))
+                if value.is_integer():
+                    return int(value)
+                else:
+                    return value
+            elif dtype == "bool":
+                return value in {".true.", ".t", "t"}
+            elif dtype == "complex":
+                value = value.strip("()")
+                sep = "," if self.decimal == "point" else ";"
+                vals = value.split(sep, maxsplit=1)
+                return complex(*map(float, vals))
+            elif dtype == "string":
+                if self.delim == "quotes":
+                    return value.strip("'").strip('"')
+                else:
+                    return value
+            elif dtype == "group":
+                msg = "Invalid match found!"
+                raise RuntimeError(msg)
+
+        warn(f"Unknown type for value '{val_str}', assuming `str`!")
+        return val_str
+#end class PwscfInputParser
+
 """Map from Python types to functions to write them."""
 WRITE_VAL_MAP = MappingProxyType({
     str  : write_str,
@@ -159,7 +323,7 @@ WRITE_VAL_MAP = MappingProxyType({
 def write_scalar(
     var: str,
     val: str | bool | int | float,  # noqa: FBT001
-    namelist: NamelistType | None = None
+    namelist: NamelistDefType | None = None
     ) -> str:
     """Write a scalar input variable and its value to a string.
 
@@ -397,12 +561,12 @@ class Section(Element):
                 # write array values
                 allow_spec = var in self.species_arrays
                 index_map = obj()
-                for index in val.keys():
+                for index in val:
                     index_map[index] = index
                 #end for
                 index_map_inv = index_map
                 if var in self.species_arrays:
-                    for index in val.keys():
+                    for index in val:
                         if isinstance(index,str):
                             if index in atom_index:
                                 index_map[index] = atom_index[index]
@@ -466,7 +630,7 @@ class Section(Element):
                             'cannot write pwscf input\n'
                             'invalid array index encountered\n'
                             'must be an integer or tuple of integers\n'
-                            f'index received: {str(index)}\n'
+                            f'index received: {index}\n'
                             f'array variable: {var}'
                             )
                         raise TypeError(msg)
@@ -486,8 +650,10 @@ class Section(Element):
 class NamelistBase(DevBase):
     """Base class for instances of namelists."""
 
-    name: ClassVar[Literal["cell", "control", "electrons", "fcp", "ions", "rism", "system"]]
-    namelist_def: ClassVar[NamelistType]
+    name: ClassVar[
+        Literal["cell", "control", "electrons", "fcp", "ions", "rism", "system"]
+    ]
+    namelist_def: ClassVar[NamelistDefType]
     required: ClassVar[bool]
     params: dict[str, PwscfInputType]
 
@@ -500,7 +666,7 @@ class NamelistBase(DevBase):
         verbose: bool = False,
         strict: bool = False,
         **params: PwscfInputType,
-        ):
+    ):
         for name, value in params.items():
             if check:
                 self.__class__.check_param(
@@ -509,8 +675,8 @@ class NamelistBase(DevBase):
                     version  = version,
                     phys_sys = phys_sys,
                     verbose  = verbose,
-                    strict   = strict
-                    )
+                    strict   = strict,
+                )
             self.params[name.lower()] = value
     #end def __init__
 
@@ -524,7 +690,7 @@ class NamelistBase(DevBase):
         *,
         verbose: bool = False,
         strict: bool = False,
-        ) -> None:
+    ) -> None:
         """Check that a parameter meets the specification from its namelist enum.
 
         Parameters
@@ -554,19 +720,24 @@ class NamelistBase(DevBase):
         try:
             param_def = cls.namelist_def(name)
         except ValueError:
-            msg = f"The parameter `{name}` is not known to Nexus, no checks will be performed"
+            msg = f"The parameter `{name}` is not known to Nexus"
             if strict:
+                close_matches = difflib.get_close_matches(
+                    name, cls.namelist_def.__members__
+                )
+                if len(close_matches) > 0:
+                    msg += f", did you mean '{close_matches[0]}'?"
                 raise ValueError(msg) from None
             elif verbose:
+                msg += ", no checks will be performed"
                 warn(msg)
                 return # Return early since we can't do the rest of the checks.
-        #end try
 
         msg = (
-            "The parameter `"+name+"` has the incorrect {attr}!\n"
+            "The parameter `" + name + "` has the incorrect {attr}!\n"
             "Expected {attr}: {known}\n"
             "Given {attr}:    {given}"
-            )
+        )
 
         def_shape     = param_def.shape
         def_type      = param_def.datatype
@@ -580,17 +751,22 @@ class NamelistBase(DevBase):
             comp_type = type(value.values()[0])
         else: # Can only be list or tuple or other such sequence
             comp_type = type(value[0])
-        #end if
+            types = {type(v) for v in value}
+            if len(types) > 1:
+                msg = f"Sequence has inconsistent types: {types}"
+                if strict:
+                    raise TypeError(msg)
+                elif verbose:
+                    warn(msg)
 
         if comp_type != def_type: # Use != instead of is not to account for Numpy types
             msg = msg.format(
                 attr="type", known=def_type.__name__, given=comp_type.__name__
-                )
+            )
             if strict:
                 raise TypeError(msg)
             elif verbose:
                 warn(msg)
-        #end if comp_type != def_type
 
         if def_allowed is not None and value not in def_allowed:
             msg = msg.format(attr="value", known=def_allowed, given=value)
@@ -598,7 +774,6 @@ class NamelistBase(DevBase):
                 raise ValueError(msg)
             elif verbose:
                 warn(msg)
-        #end if def_allowed is not None and value not in def_allowed
 
         if def_shape is not None:
             valid, msg = cls._check_param_shape(
@@ -606,13 +781,12 @@ class NamelistBase(DevBase):
                 value  = value,
                 shape  = def_shape,
                 system = phys_sys,
-                )
+            )
             if not valid:
                 if strict:
                     raise ValueError(msg)
                 elif verbose:
                     warn(msg)
-        #end if def_shape is not None
 
         if version is not None:
             valid, msg = cls._check_param_version(
@@ -621,13 +795,12 @@ class NamelistBase(DevBase):
                 current = version,
                 added   = def_v_added,
                 removed = def_v_removed,
-                )
+            )
             if not valid:
                 if strict:
                     raise ValueError(msg)
                 elif verbose:
                     warn(msg)
-        #end if version is not None
     #end def check_param
 
     @staticmethod
@@ -637,14 +810,14 @@ class NamelistBase(DevBase):
         value: Mapping,
         shape: tuple,
         system: PhysicalSystem,
-        ) -> tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Check that a non-scalar parameter has the correct shape."""
         valid = True
         msg = (
             "The value for `{name}` does not have the correct shape!\n"
             "Given indices: {given}\n"
             "Known shape:   {known}"
-            )
+        )
         if isinstance(shape[1], int) and max(value.keys()) > shape[1]:
             # Case: Fixed-shape arrays like `celldm`
             valid = False
@@ -652,7 +825,7 @@ class NamelistBase(DevBase):
                 name  = name,
                 given = tuple(value.keys()),
                 known = shape,
-                )
+            )
 
         elif isinstance(shape[1], str):
             # Case: Species arrays like `starting_charge`
@@ -663,7 +836,7 @@ class NamelistBase(DevBase):
                     name  = name,
                     given = tuple(value.keys()),
                     known = (1, system.n_species),
-                    )
+                )
             elif shape[1] == "natx" and max(value.keys()) > system.n_ions:
                 # Unused as of QE 7.6.0, but may get used in future versions
                 valid = False
@@ -671,7 +844,7 @@ class NamelistBase(DevBase):
                     name  = name,
                     given = tuple(value.keys()),
                     known = (1, system.n_ions),
-                    )
+                )
             else:
                 msg = f"Shape checking for shape `{shape}` required by param `{name}` has not been implemented!"
                 warn(msg)
@@ -680,28 +853,28 @@ class NamelistBase(DevBase):
             # Case: Multidimensional arrays
             for dim, dim_max in enumerate(shape[1]):
                 # Gets all i's together into one set
-                dim_vals = {i[dim] for i in value.keys()}
+                dim_vals = {i[dim] for i in value}
                 if isinstance(dim, int) and max(dim_vals) > dim:
                     valid = False
                     msg = msg.format(
                         name  = name,
                         given = tuple(value.keys()),
                         known = shape,
-                        )
+                    )
                 elif dim_max in {"ntyp", "ntype"} and max(dim_vals) > system.n_species:
                     valid = False
                     msg = msg.format(
                         name  = name,
                         given = tuple(value.keys()),
                         known = (1, system.n_species),
-                        )
+                    )
                 elif shape[1] == "natx" and max(dim_vals) > system.n_ions:
                     valid = False
                     msg = msg.format(
                         name  = name,
                         given = tuple(value.keys()),
                         known = (1, system.n_ions),
-                        )
+                    )
                 else:
                     msg = f"Shape checking for shape `{shape}` required by param `{name}` has not been implemented!"
                     warn(msg)
@@ -719,11 +892,11 @@ class NamelistBase(DevBase):
         current: str,
         added: str | None,
         removed: str | None,
-        ) -> tuple[bool, str]:
+    ) -> tuple[bool, str]:
         cur_ver = tuple(map(int, current.split(".")))
         add_ver = tuple(map(int, added.split("."))) if added is not None else None
         rem_ver = tuple(map(int, removed.split("."))) if removed is not None else None
-        msg = name+" was {cond} in version {ver}, but you are using version "+current
+        msg = name + " was {cond} in version {ver}, but you are using version " + current
         if rem_ver is not None and cur_ver > rem_ver:
             return False, msg.format(cond="removed", ver=removed)
         elif add_ver is not None and cur_ver < add_ver:
@@ -797,57 +970,18 @@ class Rism(NamelistBase):
 #end class Rism
 
 
-class Card(Element):
-    def __init__(self):
-        self.specifier = ''
-    #end def __init__
-
-    def get_specifier(self,line):
-        tokens = line.split()
-        if len(tokens)>1:
-            self.specifier = tokens[1].strip('{}()').lower()
-        #end if
-    #end def get_specifier
-
-    def read(self,lines):
-        self.get_specifier(lines[0])
-        self.read_text(lines[1:])
-    #end def read
-
-    def write(self,parent):
-        c = self.name.upper()+' '+self.specifier+'\n'
-        c += self.write_text()+'\n'
-        return c
-    #end def write
-
-    def read_text(self,lines):
-        raise NotImplementedError
-    #end def read_text
-
-    def write_text(self):
-        raise NotImplementedError
-    #end def write_text
-
-    def change_specifier(self,new_specifier):
-        raise NotImplementedError
-    #end def change_specifier
-
-    def change_option(self,*args,**kwargs):
-        self.change_specifier(*args,**kwargs)
-    #end def change_option
-#end class Card
-
-
 class system(Section):
     name = 'system'
     defs = SystemDefinitions
-    atomic_variables = obj(
-        hubbard_u = 'Hubbard_U',
-        start_mag = 'starting_magnetization',
-        hubbard_j = 'Hubbard_J',
-        angle1    = 'angle1',
-        angle2    = 'angle2',
-        )
+    atomic_variables = MappingProxyType(
+        {
+            "hubbard_u": 'Hubbard_U',
+            "start_mag": 'starting_magnetization',
+            "hubbard_j": 'Hubbard_J',
+            "angle1":    'angle1',
+            "angle2":    'angle2',
+        }
+    )
 
     # specialized read for partial array variables (hubbard U, starting mag, etc)
     def post_process_read(self,parent):
@@ -940,7 +1074,7 @@ class system(Section):
                 #end if
                 sval = WRITE_VAL_MAP[vtype](val)
 
-                if var in self.section_aliases.keys():
+                if var in self.section_aliases:
                     vname = self.section_aliases[var]
                 else:
                     vname = var
@@ -958,494 +1092,2061 @@ class system(Section):
 #end class system
 
 
-class atomic_species(Card):
-    name = 'atomic_species'
+class CardBase(ABC):
+    """Base class for :class:`PwscfInput` cards."""
 
-    def read_text(self,lines):
+    @classmethod
+    @abstractmethod
+    def read(cls, lines: list[str]) -> Self:
+        """Read a card and return an instance of the card's class."""
+        ...
+    #end def read
+
+    def post_process_read(self, pwscf_input: PwscfInput) -> None:  # noqa: B027
+        pass
+    #end def post_process_read
+
+    @abstractmethod
+    def write(self) -> str:
+        ...
+    #end def write
+
+    def change_specifier(self, new_specifier: str) -> None:
+        msg = (
+            f"Can not change to {new_specifier}, "
+            f"no specifiers available for card {self.name.upper()}"
+        )
+        raise ValueError(msg)
+    #end def change_specifier
+
+    @nxs_deprecate(since="2.4.9", replacement="change_specifier")
+    def change_option(self,*args,**kwargs):
+        self.change_specifier(*args,**kwargs)
+    #end def change_option
+#end class CardBase
+
+
+class AtomicSpecies(CardBase):
+    name = "atomic_species"
+
+    atoms: list[str]
+    masses: dict[str, float]
+    pseudos: dict[str, str]
+
+    def __init__(
+        self,
+        atoms: list[str],
+        masses: dict[str, float] | None,
+        pseudos: dict[str, str],
+    ):
+        if not all(Elements.is_element(e) for e in atoms):
+            msg = "Not all atoms supplied are elements!"
+            raise NotAnElementError(msg)
+
+        if masses is None:
+            masses = {}
+            for atom in atoms:
+                _, elem = Elements.is_element(atom, return_element=True)
+                masses[atom] = elem.atomic_weight
+
+        if set(atoms) != set(masses) != set(pseudos):
+            msg = "Atoms, masses, and pseudos must all have the same atoms!"
+            raise ValueError(msg)
+
+        self.atoms = atoms
+        self.masses = masses
+        self.pseudos = pseudos
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
         atoms = []
-        masses   = obj()
-        pseudopotentials = obj()
-        for l in lines:
-            tokens = l.split()
-            atom = tokens[0]
-            atoms.append(tokens[0])
-            masses[atom] = read_float(tokens[1])
-            pseudopotentials[atom] = tokens[2]
-        #end for
-        self.add(atoms=atoms,masses=masses,pseudopotentials=pseudopotentials)
-    #end def read_text
+        masses = {}
+        pseudos = {}
+        for line in lines:
+            atom, mass, pseudo = line.split()
+            atoms.append(atom)
+            masses[atom] = read_float(mass)
+            pseudos[atom] = pseudo
 
-    def write_text(self):
-        c = ''
+        return cls(atoms, masses, pseudos)
+    #end def read
+
+    def write(self) -> str:
+        text = ""
         for at in self.atoms:
-            c += '   '+f'{at:2}'+' '+str(self.masses[at])+' '+self.pseudopotentials[at]+'\n'
-        #end for
-        return c
-    #end def write_text
-#end class atomic_species
+            text += f"    {at:2} {self.masses[at]} {self.pseudos[at]}\n"
+        text += "\n"
+        return text
+    #end def write
+#end class AtomicSpecies
 
 
-class atomic_positions(Card):
-    name = 'atomic_positions'
+type AtomicPositionsSpecifier = Literal["alat", "bohr", "angstrom", "crystal"]
 
-    def read_text(self,lines):
-        npos = len(lines)
-        dim = 3
+class AtomicPositions(CardBase):
+    name = "atomic_positions"
+
+    valid_specifiers = frozenset({"alat", "bohr", "angstrom", "crystal"})
+
+    specifier: AtomicPositionsSpecifier
+    atoms: list[str]
+    pos: npt.NDArray[np.float64]
+    force_multipliers: npt.NDArray[np.int64] | None
+
+    def __init__(
+        self,
+        arg0: list[str] | Structure | PhysicalSystem,
+        pos: npt.ArrayLike[np.floating] | None = None,
+        force_multipliers: npt.ArrayLike[np.floating] | None = None,
+        specifier: AtomicPositionsSpecifier | None = None,
+    ):
+        if isinstance(arg0, PhysicalSystem):
+            arg0 = arg0.structure
+
+        if isinstance(arg0, Structure):
+            self.atoms = arg0.elem.tolist()
+            if not all(Elements.is_element(e) for e in self.atoms):
+                msg = "Not all atoms supplied are elements!"
+                raise NotAnElementError(msg)
+
+            self.pos = arg0.pos
+            self.force_multipliers = arg0.frozen
+            self.specifier = "bohr" if "b" in arg0.units.lower() else "angstrom"
+            return
+
+        self.atoms = arg0
+        if not all(Elements.is_element(e) for e in self.atoms):
+            msg = "Not all atoms supplied are elements!"
+            raise NotAnElementError(msg)
+
+        if pos is None:
+            msg = "pos can not be None when `atoms` is a list of elements!"
+            raise ValueError(msg)
+        elif len(pos) != len(self.atoms):
+            msg = "The pos array must be the same length as the number of atoms!"
+            raise ValueError(msg)
+        self.pos = np.asarray(pos, dtype=float)
+
+        if (s_low := specifier.lower()) in self.valid_specifiers:
+            self.specifier = s_low
+        else:
+            msg = f"Invalid or unsupported specifier '{specifier}'!"
+            raise ValueError(msg)
+
+        if force_multipliers is not None:
+            if len(force_multipliers) != len(self.atoms):
+                msg = "The force_multipliers array must be the same length as the number of atoms!"
+                raise ValueError(msg)
+            force_multipliers = np.asarray(force_multipliers)
+            if force_multipliers.dtype != int or force_multipliers.dtype != bool:
+                msg = "force_multipliers must be an integer or mask array!"
+            force_multipliers = force_multipliers.astype(int)
+
+        self.force_multipliers = force_multipliers
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        specifier = lines[0].split()[1].strip("{}()").lower()
+        npos = len(lines[1:])
         atoms = []
-        positions = np.empty((npos,dim))
-        relax_directions = np.empty((npos,dim),dtype=int)
-        has_relax_directions = False
-        for idx, l in enumerate(lines):
+        positions = np.empty((npos, 3), dtype=float)
+        force_multipliers = np.zeros((npos, 3), dtype=int)
+        for idx, l in enumerate(lines[1:]):
             tokens = l.split()
             atoms.append(tokens[0])
-            positions[idx,:] = np.array(tokens[1:4],dtype=np.float64)
-            has_relax_directions = len(tokens)==7
-            if has_relax_directions:
-                relax_directions[idx,:] = np.array(tokens[4:7],dtype=int)
-            #end if
-        #end for
-        self.add(atoms=atoms,positions=positions)
-        if has_relax_directions:
-            self.add(relax_directions=relax_directions)
-        #end if
-    #end def read_text
+            positions[idx,:] = np.array(tokens[1:4], dtype=float)
+            if len(tokens) == 7:
+                force_multipliers[idx,:] = np.array(tokens[4:7], dtype=int)
+
+        if np.sum(force_multipliers) == 0:
+            force_multipliers = None
+
+        return cls(
+            arg0=atoms,
+            pos=positions,
+            force_multipliers=force_multipliers,
+            specifier=specifier,
+        )
+    #end def read
 
 
-    def write_text(self):
-        c = ''
-        has_relax_directions = 'relax_directions' in self
-        if has_relax_directions:
-            rowsep = ''
-        else:
-            rowsep = '\n'
-        #end if
-        for i in range(len(self.atoms)):
-            c +='   '+f'{self.atoms[i]:2}'+' '
-            c += array_to_string(self.positions[i],pad='',rowsep=rowsep)
-            if has_relax_directions:
-                c += array_to_string(self.relax_directions[i],pad='',fmt='{0}')
-            #end if
-        #end for
-        return c
-    #end def write_text
+    def write(self) -> str:
+        text = f"{self.name.upper()} {self.specifier}\n"
+        for idx, (atom, pos) in enumerate(zip(self.atoms, self.pos, strict=True)):
+            fmt = "16.8f"
+            text += f"    {atom:2} {pos[0]:{fmt}} {pos[1]:{fmt}} {pos[2]:{fmt}}"
+            if self.force_multipliers is not None:
+                mult = self.force_multipliers[idx]
+                text += f" {mult[0]:d} {mult[1]:d} {mult[2]:d}"
+            text += "\n"
+
+        return text
+    #end def write
 
 
-    def change_specifier(self,new_specifier,pwi):
-        scale = pwi.get_common_vars('scale')
+    def change_specifier(
+        self,
+        new_specifier: AtomicPositionsSpecifier,
+        pwi: PwscfInput,
+    ) -> None:
+        new_specifier = new_specifier.lower()
+        if new_specifier == self.specifier:
+            return
+        elif new_specifier not in AtomicPositions.valid_specifiers:
+            msg = (
+                f"Specifier provided was '{new_specifier}' but must be one of "
+                f"{sorted(AtomicPositions.valid_specifiers)}"
+            )
+            raise ValueError(msg)
 
+        scale = pwi.alat
         pos = self.positions
+        match self.specifier: # Convert to bohr
+            case "alat":
+                pos *= scale
+            case "bohr":
+                pass
+            case "angstrom":
+                pos *= convert(1., "A", "B")
+            case "crystal":
+                pos = np.dot(pos, pwi.axes)
 
-        spec = self.specifier
-        if spec=='alat' or spec=='':
-            pos *= scale
-        elif spec=='bohr':
-            pass
-        elif spec=='angstrom':
-            pos *= convert(1.,'A','B')
-        elif spec=='crystal':
-            axes = pwi.get_common_vars('axes')
-            pos = np.dot(pos,axes)
-        else:
-            msg = (
-                'old specifier for atomic_positions is invalid\n'
-                '  old specifier: '+spec+'\n'
-                '  valid options: alat, bohr, angstrom, crystal'
-                )
-            raise ValueError(msg)
-        #end if
-
-        spec = new_specifier
-        if spec=='alat' or spec=='':
-            pos /= scale
-        elif spec=='bohr':
-            pass
-        elif spec=='angstrom':
-            pos /= convert(1.,'A','B')
-        elif spec=='crystal':
-            axes = pwi.get_common_vars('axes')
-            pos = np.dot(pos,inv(axes))
-        else:
-            msg = (
-                'new specifier for atomic_positions is invalid\n'
-                '  new specifier: '+spec+'\n'
-                '  valid options: alat, bohr, angstrom, crystal'
-                )
-            raise ValueError(msg)
-        #end if
+        match new_specifier:
+            case "alat":
+                pos /= scale
+            case "bohr":
+                pass
+            case "angstrom":
+                pos /= convert(1., "A", "B")
+            case "crystal":
+                pos  = np.dot(pos, inv(pwi.axes))
 
         self.positions = pos
         self.specifier = new_specifier
     #end def change_specifier
-#end class atomic_positions
+#end class AtomicPositions
 
 
-class atomic_forces(Card):
-    name = 'atomic_forces'
+class AtomicForces(CardBase):
+    name = "atomic_forces"
 
-    def read_text(self,lines):
+    def __init__(self, atoms: list[str], forces: npt.ArrayLike[np.floating]) -> None:
+        if not all(Elements.is_element(e) for e in atoms):
+            msg = "Not all atoms supplied are elements!"
+            raise NotAnElementError(msg)
+
+        self.atoms = atoms
+        self.forces = np.asarray(forces, dtype=float)
+        if (shape := self.forces.shape) != (len(self.atoms), 3):
+            msg = f"'forces' must have shape {(len(self.atoms), 3)} but has shape {shape}!"
+            raise ValueError(msg)
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
         npos = len(lines)
         dim = 3
         atoms = []
-        forces = np.empty((npos,dim))
+        forces = np.empty((npos,dim), dtype=float)
         for idx, l in enumerate(lines):
             tokens = l.split()
             atoms.append(tokens[0])
-            forces[idx,:] = np.array(tokens[1:4],dtype=np.float64)
-        #end for
-        self.add(atoms=atoms,forces=forces)
-    #end def read_text
+            forces[idx,:] = np.array(tokens[1:4], dtype=float)
+
+        return cls(atoms=atoms,forces=forces)
+    #end def read
 
 
-    def write_text(self):
-        c = ''
-        rowsep = '\n'
-        for i in range(len(self.atoms)):
-            c +='   '+f'{self.atoms[i]:2}'+' '
-            c += array_to_string(self.forces[i],pad='',rowsep=rowsep)
-        #end for
-        return c
-    #end def write_text
-#end class atomic_forces
+    def write(self) -> str:
+        text = f"{self.name.upper()} {self.specifier}\n"
+        for atom, force in zip(self.atoms, self.forces, strict=True):
+            text += "    {:2} {:{f}} {:{f}} {:{f}}\n".format(
+                atom, *force, f="16.8f",
+            )
+
+        return text
+    #end def write
+#end class AtomicForces
 
 
-class k_points(Card):
-    name = 'k_points'
+type KPointsSpecifier = Literal[
+    "tpiba",
+    "crystal",
+    "tpiba_b",
+    "crystal_b",
+    "tpiba_c",
+    "crystal_c",
+    "automatic",
+    "gamma"
+]
 
-    def read_text(self,lines):
-        if self.specifier in {'tpiba','crystal','tpiba_b','crystal_b',''}:
-            self.nkpoints = int(lines[0])
-            a = array_from_lines(lines[1:])
-            self.kpoints = a[:,0:3]
-            self.weights = a[:,3]
-            npe.reshape_inplace(self.weights, (self.nkpoints,))
-        elif self.specifier == 'automatic':
-            a = np.fromstring(lines[0],sep=' ')
-            self.grid  = a[0:3]
-            self.shift = a[3:]
-        elif self.specifier == 'gamma':
-            pass
-        else:
-            msg = 'k_points specifier '+self.specifier+' is unrecognized'
-            raise ValueError(msg)
-        #end if
-    #end def read_text
+class KPoints(CardBase):
+    """K-points card in a :class:`PwscfInput` [1]_.
 
+    References
+    ----------
+    .. [1] https://www.quantum-espresso.org/Doc/INPUT_PW.html#id277
+    """
+    name = "k_points"
 
-    def write_text(self):
-        c = ''
-        if self.specifier in {'tpiba','crystal','tpiba_b','crystal_b',''}:
-            self.nkpoints = len(self.kpoints)
-            c+='   '+str(self.nkpoints)+'\n'
-            a = np.empty((self.nkpoints,4))
-            a[:,0:3] = self.kpoints
-            a[:,3]   = self.weights[:]
-            c+=array_to_string(a)
-        elif self.specifier == 'automatic':
-            c+='   '
-            c+=array_to_string(np.array(self.grid),pad='',fmt='{0}',converter=int,rowsep='')
-            c+=array_to_string(np.array(self.shift),pad=' ',fmt='{0}',converter=int)
-        elif self.specifier == 'gamma':
-            pass
-        else:
-            msg = 'k_points specifier '+self.specifier+' is unrecognized'
-            raise ValueError(msg)
-        #end if
-        return c
-    #end def write_text
+    valid_specifiers = frozenset(
+        {
+            "tpiba",
+            "crystal",
+            "tpiba_b",
+            "crystal_b",
+            "tpiba_c",
+            "crystal_c",
+            "automatic",
+            "gamma",
+        }
+    )
 
+    specifier: KPointsSpecifier
+    kpoints: npt.NDArray[np.float64] | None
+    weights: npt.NDArray[np.float64] | None
+    grid: npt.NDArray[np.int64] | None
+    shift: npt.NDArray[np.int64] | None
 
-    def change_specifier(self,new_specifier,pwi):
-        scale,kaxes = pwi.get_common_vars('scale','kaxes')
+    @overload
+    def __init__(self, specifier: Literal["gamma"]) -> None: ...
+    @overload
+    def __init__(
+        self,
+        specifier: Literal[
+            "tpiba", "crystal", "tpiba_b", "crystal_b", "tpiba_c", "crystal_c",
+        ],
+        nkpoints: int,
+        kpoints: npt.ArrayLike[np.floating],
+        weights: npt.ArrayLike[np.floating],
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        specifier: Literal["automatic"],
+        grid: npt.ArrayLike[np.integer],
+        shift: npt.ArrayLike[np.integer],
+    ) -> None: ...
 
-        spec = self.specifier
-        if spec=='tpiba' or spec=='':
-            kpoints = self.kpoints*(2*pi)/scale
-        elif spec=='gamma':
-            kpoints = np.array([[0,0,0]])
-        elif spec=='crystal':
-            kpoints = np.dot(self.kpoints,kaxes)
-        elif spec=='automatic':
-            grid  = np.array(self.grid,dtype=int)
-            shift = .5*np.array(self.shift)
-            kpoints = kmesh(kaxes,grid,shift)
-        elif spec=='tpiba_b' or spec=='crystal_b':
-            msg = 'specifiers tpiba_b and crystal_b have not yet been implemented in change_specifier'
-            raise NotImplementedError(msg)
-        else:
+    def __init__(
+        self,
+        specifier: KPointsSpecifier,
+        nkpoints: int | None = None,
+        kpoints: npt.ArrayLike[np.floating] | None = None,
+        weights: npt.ArrayLike[np.floating] | None = None,
+        grid: npt.ArrayLike[np.integer] | None = None,
+        shift: npt.ArrayLike[np.integer] | None = None,
+    ) -> None:
+        s_low = specifier.lower()
+        if s_low not in KPoints.valid_specifiers:
             msg = (
-                'old specifier for k_points is invalid\n'
-                '  old specifier: '+spec+'\n'
-                '  valid options: tpiba, gamma, crystal, automatic, tpiba_b, crystal_b'
-                )
+                f"Specifier '{specifier}' is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(KPoints.valid_specifiers)}"
+            )
             raise ValueError(msg)
-        #end if
 
-        spec = new_specifier
-        if spec=='tpiba' or spec=='':
-            kpoints = kpoints/((2*pi)/scale)
-        elif spec=='gamma':
-            kpoints = np.array([[0,0,0]])
-        elif spec=='crystal':
-            kpoints = np.dot(kpoints,inv(kaxes))
-        elif spec=='automatic':
-            if self.specifier!='automatic':
-                msg = 'cannot map arbitrary kpoints into a Monkhorst-Pack mesh'
+        self.specifier = s_low
+        self.kpoints = None
+        self.weights = None
+        self.grid = None
+        self.shift = None
+        wmsg = "Ignoring {ign} with specifier '{spec}'."
+        emsg = "'{var}' must have shape {shp} but has shape {bad}"
+        if self.specifier == "gamma":
+            ignored = [
+                i for i in (nkpoints, kpoints, weights, grid, shift) if i is not None
+            ]
+            if len(ignored) > 0:
+                warn(wmsg.format(ignored, self.specifier))
+        elif self.specifier == "automatic":
+            ignored = [i for i in (nkpoints, kpoints, weights) if i is not None]
+            if len(ignored) > 0:
+                warn(wmsg.format(ignored, self.specifier))
+
+            self.grid = np.asarray(grid, dtype=int)
+            self.shift = np.asarray(shift, dtype=int)
+
+            if (bad := self.grid.shape) != (3,):
+                msg = emsg.format(var="grid", shp=(3,), bad=bad)
                 raise ValueError(msg)
-            #end if
-        elif spec=='tpiba_b' or spec=='crystal_b':
-            msg = 'specifiers tpiba_b and crystal_b have not yet been implemented in change_specifier'
-            raise NotImplementedError(msg)
+
+            if (bad := self.shift.shape) != (3,):
+                msg = emsg.format(var="shift", shp=(3,), bad=bad)
+                raise ValueError(msg)
         else:
+            ignored = [i for i in (grid, shift) if i is not None]
+            if len(ignored) > 0:
+                warn(wmsg.format(ignored, self.specifier))
+            nkpoints = int(nkpoints)
+            self.kpoints = np.asarray(kpoints, dtype=float)
+            self.weights = np.asarray(weights, dtype=float)
+            if (bad := self.kpoints.shape) != (nkpoints, 3):
+                msg = emsg.format(var="kpoints", shp=(nkpoints, 3), bad=bad)
+                raise ValueError(msg)
+
+            if (bad := self.kpoints.shape) != (nkpoints,):
+                msg = emsg.format(var="weights", shp=(nkpoints,), bad=bad)
+                raise ValueError(msg)
+    #end def __init__
+
+    @property
+    def nkpoints(self) -> int | None:
+        if self.kpoints is not None:
+            return self.kpoints.shape[0]
+        return None
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        specifier = lines[0].split()[1].strip("{}()").lower()
+        specifier = specifier if specifier != "" else "tpiba"
+
+        if specifier not in cls.valid_specifiers:
             msg = (
-                'new specifier for k_points is invalid\n'
-                '  new specifier: '+spec+'\n'
-                '  valid options: tpiba, gamma, crystal, automatic, tpiba_b, crystal_b'
-                )
+                f"Specifier '{specifier}' is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(cls.valid_specifiers)}"
+            )
             raise ValueError(msg)
-        #end if
+
+        nkpoints = None
+        grid     = None
+        kpoints  = None
+        weights  = None
+        shift    = None
+
+        if specifier == "gamma":
+            pass
+        elif specifier == "automatic":
+            line = lines[1].split()
+            grid = np.array(line[0:3], dtype=int)
+            shift = np.array(line[3:6], dtype=int)
+        else:
+            nkpoints = int(lines[1])
+            kpoints = np.empty((nkpoints, 3), dtype=float)
+            weights = np.empty((nkpoints,), dtype=float)
+            for idx, line in enumerate(lines[2:]):
+                kpt_info = line.split()
+                kpoints[idx, :] = kpt_info[0:3]
+                weights[idx] = kpt_info[3]
+
+        return cls(
+            specifier=specifier,
+            nkpoints=nkpoints,
+            kpoints=kpoints,
+            weights=weights,
+            grid=grid,
+            shift=shift,
+        )
+    #end def read
+
+
+    def write(self) -> str:
+        text = f"{self.name.upper()} {self.specifier}\n"
+        if self.specifier == "gamma":
+            pass
+        elif self.specifier == "automatic":
+            text += "    {:{f}} {:{f}} {:{f}} {:{f}} {:{f}} {:{f}}\n".format(
+                *self.grid, *self.shift, f="4d"
+            )
+        else:
+            text += f"  {self.nkpoints}\n"
+            for kpt, weight in zip(self.kpoints, self.weights, strict=True):
+                text += "    {:{f}} {:{f}} {:{f}} {:{f}}\n".format(
+                    *kpt, weight, f="16.8f"
+                )
+
+        return text
+    #end def write
+
+
+    def change_specifier(
+        self,
+        new_specifier: KPointsSpecifier,
+        pwi: PwscfInput,
+    ):
+        new_specifier = new_specifier.lower()
+        if self.specifier == new_specifier:
+            return
+        elif new_specifier == "automatic":
+            msg = (
+                "Cannot map arbitrary kpoints into an automatic Monkhorst-Pack mesh!\n"
+                f"(Existing specifier: {self.specifier})"
+            )
+            raise ValueError(msg)
+        elif new_specifier in {"tpiba_b", "crystal_b", "tpiba_c", "crystal_c"}:
+            msg = f"Conversion to specifier '{new_specifier}' has not been implemented yet!"
+            raise ValueError(msg)
+        elif self.specifier in {"tpiba_b", "crystal_b", "tpiba_c", "crystal_c"}:
+            msg = f"Conversion from specifier '{self.specifier}' has not been implemented yet!"
+            raise ValueError(msg)
+        elif new_specifier not in KPoints.valid_specifiers:
+            msg = f"Specifier '{new_specifier}' is not known to Nexus!"
+            raise ValueError(msg)
+
+        alat, kaxes = pwi.alat, pwi.kaxes
+        match self.specifier:
+            case "tpiba":
+                kpoints = self.kpoints * (2 * pi) / alat
+            case "gamma":
+                kpoints = np.zeros((1, 3), dtype=int)
+            case "crystal":
+                kpoints = np.dot(self.kpoints, kaxes)
+            case "automatic":
+                grid  = self.grid
+                shift = 0.5 * self.shift
+                kpoints = kmesh(kaxes, grid, shift)
+
+        match new_specifier:
+            case 'tpiba':
+                kpoints = kpoints/ ((2 * pi) / alat)
+            case 'gamma':
+                kpoints = np.zeros((1, 3), dtype=int)
+            case 'crystal':
+                kpoints = np.dot(kpoints, inv(kaxes))
 
         self.kpoints   = kpoints
         self.specifier = new_specifier
     #end def change_specifier
-#end class k_points
+#end class KPoints
 
 
-class cell_parameters(Card):
-    name = 'cell_parameters'
+type CellParametersSpecifier = Literal["alat", "bohr", "angstrom"]
 
-    def read_text(self,lines):
-        self.vectors = array_from_lines(lines)
-    #end def read_text
+class CellParameters(CardBase):
+    name = "cell_parameters"
 
-    def write_text(self):
-        return array_to_string(self.vectors)
-    #end def write_text
+    valid_specifiers = frozenset({"alat", "bohr", "angstrom"})
 
-    def change_specifier(self,new_specifier,pwi):
-        scale = pwi.get_common_vars('scale')
+    axes: npt.NDArray[np.float64]
+    specifier: CellParametersSpecifier
 
-        vec = self.vectors
+    @overload
+    def __init__(self, axes: PhysicalSystem | Structure) -> None: ...
+    @overload
+    def __init__(
+        self,
+        axes: npt.ArrayLike[np.floating],
+        specifier: CellParametersSpecifier,
+    ) -> None: ...
 
-        spec = self.specifier
-        if spec=='alat' or spec=='':
-            vec *= scale
-        elif spec=='bohr':
-            pass
-        elif spec=='angstrom':
-            vec *= convert(1.,'A','B')
-        else:
+    def __init__(
+        self,
+        axes: npt.ArrayLike[np.floating] | PhysicalSystem | Structure,
+        specifier: CellParametersSpecifier | None = None,
+    ) -> None:
+        if isinstance(axes, PhysicalSystem):
+            axes = axes.structure
+
+        if isinstance(axes, Structure):
+            if not axes.has_axes():
+                msg = "Structure does not have axes!"
+                raise ValueError(msg)
+            specifier = "bohr" if "b" in axes.units.lower() else "angstrom"
+            axes = axes.axes
+
+        s_low = specifier.lower()
+        if s_low not in CellParameters.valid_specifiers:
             msg = (
-                'old specifier for cell_parameters is invalid\n'
-                '  old specifier: '+spec+'\n'
-                '  valid options: alat, bohr, angstrom'
-                )
+                f"Specifier {specifier} is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(CellParameters.valid_specifiers)}"
+            )
             raise ValueError(msg)
-        #end if
 
-        spec = new_specifier
-        if spec=='alat' or spec=='':
-            vec /= scale
-        elif spec=='bohr':
-            pass
-        elif spec=='angstrom':
-            vec /= convert(1.,'A','B')
-        else:
-            msg = (
-                'new specifier for cell_parameters is invalid\n'
-                '  new specifier: '+spec+'\n'
-                '  valid options: alat, bohr, angstrom'
-                )
+        self.axes = np.asarray(axes, dtype=float)
+        if (shape := axes.shape) != (3, 3):
+            msg = f"'axes' must have shape (3, 3) but has shape {shape}!"
             raise ValueError(msg)
-        #end if
+
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        specifier = lines[0].split()[1].strip("{}()").lower()
+
+        if specifier not in cls.valid_specifiers:
+            msg = (
+                f"Specifier '{specifier}' is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(cls.valid_specifiers)}"
+            )
+            raise ValueError(msg)
+
+        axes = np.empty((3, 3), dtype=float)
+        for idx, line in enumerate(lines[1:]):
+            axes[idx, :] = line.split()
+
+        return cls(axes=axes, specifier=specifier)
+    #end def read
+
+    def write(self) -> str:
+        text = f"{self.name.upper()} {self.specifier}\n"
+        for vec in self.axes:
+            text += "    {:{f}} {:{f}} {:{f}}\n".format(*vec, f="16.8f")
+
+        return text
+    #end def write
+
+    def change_specifier(
+        self,
+        new_specifier: CellParametersSpecifier,
+        pwi: PwscfInput
+    ) -> None:
+        s_low = new_specifier.lower()
+        if self.specifier == s_low:
+            return
+        elif s_low not in CellParameters.valid_specifiers:
+            msg = (
+                f"Specifier {new_specifier} is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(CellParameters.valid_specifiers)}"
+            )
+            raise ValueError(msg)
+
+        alat = pwi.alat
+        vec = self.axes
+        match self.specifier:
+            case "alat":
+                vec *= alat
+            case "bohr":
+                pass
+            case "angstrom":
+                vec *= convert(1.0, "A", "B")
+
+        match s_low:
+            case "alat":
+                vec /= alat
+            case "bohr":
+                pass
+            case "angstrom":
+                vec /= convert(1.0, "A", "B")
 
         self.vectors   = vec
-        self.specifier = new_specifier
+        self.specifier = s_low
     #end def change_specifier
-#end class cell_parameters
+#end class CellParameters
+
+type ConstraintName = Literal[
+    "type_coord",
+    "atom_coord",
+    "distance",
+    "planar_angle",
+    "torsional_angle",
+    "bennett_proj",
+    "potential_wall",
+]
+
+class Constraint(ABC):
+
+    constraint_names: ClassVar = frozenset(
+        {
+            "type_coord",
+            "atom_coord",
+            "distance",
+            "planar_angle",
+            "torsional_angle",
+            "bennett_proj",
+            "potential_wall",
+        }
+    )
+
+    name: ClassVar[ConstraintName]
+    constr_target: float | None
+
+    @classmethod
+    def _verify_types(cls, **kwargs: int | float) -> str | Literal[""]:
+        types = inspect.get_annotations(cls.__init__)
+        types.pop("self", None)
+        types.pop("return", None)
+
+        msg = ""
+        for key, value in kwargs.items():
+            dtype = types[key]
+            if dtype is int and value.is_integer():
+                # Convert integer-value floats to ints
+                value = int(value)
+
+            dtype = int | np.integer if dtype is int else float | np.floating
+            if not isinstance(value, dtype):
+                msg += (
+                    f"Input '{key}' should have type {dtype.__name__} "
+                    f"but has type {type(value).__name__}!"
+                )
+
+        return msg
+
+    @abstractmethod
+    def __init__(self, *args, **kwargs) -> None:
+        ...
+
+    @property
+    @abstractmethod
+    def values(self) -> list[int | float]:
+        ...
+#end class Constraint
 
 
-class constraints(Card):
-    name = 'constraints'
+class TypeCoordConstraint(Constraint):
+    name = "type_coord"
 
-    def read_text(self,lines):
-        tokens = lines[0].split()
-        self.ncontraints = int(tokens[0])
-        if len(tokens)>1:
-            self.tolerance = float(tokens[1])
-        #end if
-        self.constraints = obj()
-        for i in range(len(lines)-1):
-            tokens = lines[i+1].split()
-            cons = obj()
-            cons.type = tokens[0]
-            cons.parameters = np.array(tokens[1:],dtype=np.float64)
-            self.constraints[i] = cons
-        #end for
-    #end def read_text
+    atom_idx_1: int
+    atom_idx_2: int
+    cutoff_radius: float
+    smoothing: float
 
-    def write_text(self):
-        c = '   '+str(self.nconstraints)
-        if 'tolerance' in self:
-            c+=' '+str(self.tolerance)
-        #end if
-        for cons in self.constraints:
-            c+='   '+cons.type+' '+array_to_string(cons.parameters,pad='')
-        #end for
-        return c
-    #end def write_text
-#end class constraints
+    def __init__(
+        self,
+        atom_idx_1: int,
+        atom_idx_2: int,
+        cutoff_radius: float,
+        smoothing: float,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                atom_idx_1=atom_idx_1,
+                atom_idx_2=atom_idx_2,
+                cutoff_radius=cutoff_radius,
+                smoothing=smoothing,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.atom_idx_1 = atom_idx_1
+        self.atom_idx_2 = atom_idx_2
+        self.cutoff_radius = cutoff_radius
+        self.smoothing = smoothing
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, int, float, float]:
+        vals = [
+            self.atom_idx_1,
+            self.atom_idx_2,
+            self.cutoff_radius,
+            self.smoothing,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class TypeCoordConstraint
 
 
-class occupations(Card):
-    name = 'occupations'
-
-    def read_text(self,lines):
-        self.occupations = array_from_lines(lines)
-    #end def read_text
-
-    def write_text(self):
-        return array_to_string(self.occupations)
-    #end def write_text
-#end class occupations
+class AtomCoordConstraint(TypeCoordConstraint):
+    name = "atom_coord"
+#end class AtomCoordConstraint
 
 
-class hubbard(Card):
-    name = 'hubbard'
-    available_specifiers = ('atomic', 'ortho-atomic', 'norm-atomic', 'wf', 'pseudo')
-    default_specifier = 'atomic'
-    system = None
-    def read_text(self, lines):
-        self.hubbard = {}
-        for line in lines:
-            line = line.strip().split()
-            if line:
-                intrxn = line[0]
-                if len(line) == 3:
-                    specie = line[1]
-                    val = float(line[2])
-                    if intrxn not in self.hubbard:
-                        self.hubbard[intrxn] = {}
-                    #end if
-                    self.hubbard[intrxn][specie] = val
-                elif len(line) == 6:
-                    specie1 = line[1]
-                    specie2 = line[2]
-                    ind1 = int(line[3])
-                    ind2 = int(line[4])
-                    val = float(line[5])
-                    if intrxn not in self.hubbard.keys():
-                        self.hubbard[intrxn] = {(specie1, specie2):[{'indices':(ind1, ind2), 'value':val}]}
-                    else:
-                        if (specie1, specie2) not in self.hubbard[intrxn].keys():
-                            self.hubbard[intrxn][(specie1, specie2)]=[{'indices':(ind1, ind2), 'value':val}]
-                        else:
-                            self.hubbard[intrxn][(specie1, specie2)].append({'indices':(ind1, ind2), 'value':val})
-                        #end if
-                    #end if
-            #end for
-        #end for
-    #end def read_text
+class DistanceConstraint(Constraint):
+    name = "distance"
 
-    def write_text(self):
-        manifold_dict = {}
-        contents = ''
-        for param, interaction in self.hubbard.items():
-            valid_format = True
-            assert(param in {'U', 'J', 'B', 'E2', 'E3', 'V'})
-            assert(isinstance(interaction, dict))
-            for label_manifold, value in interaction.items():
-                if isinstance(label_manifold, str):
-                    # Ex: {'U':{'C-2p': 1.0}}
-                    assert(isinstance(value, (int, float)))
-                    contents += f"{param} {label_manifold} {value} \n"
-                elif isinstance(label_manifold, tuple):
-                    assert(len(label_manifold) == 2)
-                    assert(all(isinstance(_, str) for _ in label_manifold))
-                    if isinstance(value, (int, float)):
-                        # Ex: {'V' : {('C-2p', 'C-2p'): 1e-8}}
-                        atom1, manifold1 = label_manifold[0].split('-')
-                        atom2, manifold2 = label_manifold[1].split('-')
-                        if atom1 not in manifold_dict.keys():
-                            manifold_dict[atom1] = [manifold1]
-                        elif manifold1 not in manifold_dict[atom1]:
-                            manifold_dict[atom1].append(manifold1)
-                        #end if
-                        if atom2 not in manifold_dict.keys():
-                            manifold_dict[atom2] = manifold2
-                        elif manifold2 not in manifold_dict[atom2]:
-                            manifold_dict[atom2].append(manifold2)
-                        #end if
-                        elem = self.system.structure.elem
-                        index1 = np.where(elem == atom1)[0] + 1
-                        index2 = np.where(elem == atom2)[0] + 1
-                        combs = []
-                        for in1 in index1:
-                            for in2 in index2:
-                                combs.append([in1, in2])
-                            #end for
-                        #end for
-                        for ind1, ind2 in combs:
-                            contents += f"{param} {label_manifold[0]} {label_manifold[1]} {ind1} {ind2} {value}\n"
-                        #end for
-                    elif isinstance(value, list):
-                        for val in value:
-                            if 'indices' in val.keys() and 'value' in val.keys():
-                                # Ex: {'V' : {('C-2p', 'C-2p'): [{'indices':(1,2), 'value':1e-8}]}
-                                ind1 = val['indices'][0]
-                                ind2 = val['indices'][1]
-                                val = val['value']
-                                contents += f"{param} {label_manifold[0]} {label_manifold[1]} {ind1} {ind2} {val}\n"
-                            elif 'radius' in val.keys() and 'value' in val.keys():
-                                # Ex: {'V' : {('C-2p', 'C-2p'): [{'radius':4.5, 'value':1e-8}]} radius is in Bohr
-                                atom1, manifold1 = label_manifold[0].split('-')
-                                atom2, manifold2 = label_manifold[1].split('-')
-                                elem = self.system.structure.elem
-                                index1 = np.where(elem == atom1)[0]
-                                index2 = np.where(elem == atom2)[0]
-                                nn = self.system.structure.nearest_neighbors(rmax = val['radius'])
-                                combs = []
-                                for in1 in index1:
-                                    for in2 in index2:
-                                        if in2 in nn[in1]:
-                                            combs.append([in1+1, in2+1])
-                                        #end if
-                                    #end for
-                                #end for
-                                # import pdb
-                                # pdb.set_trace()
-                                for ind1, ind2 in combs:
-                                    contents += f"{param} {label_manifold[0]} {label_manifold[1]} {ind1} {ind2} {val['value']}\n"
-                                #end for
-                            else:
-                                valid_format = False
-                            #end if
-                        #end for
-                    else:
-                        valid_format = False
-                    #end if
-                else:
-                    valid_format = False
-                #end for
-                if not valid_format:
-                    msg = 'Hubbard card unknown input format'
-                    raise ValueError(msg)
-            #end for
-        #end for
-        for key, value in manifold_dict.items():
-            if len(value) > 2:
+    atom_idx_1: int
+    atom_idx_2: int
+
+    def __init__(
+        self,
+        atom_idx_1: int,
+        atom_idx_2: int,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                atom_idx_1=atom_idx_1,
+                atom_idx_2=atom_idx_2,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.atom_idx_1 = atom_idx_1
+        self.atom_idx_2 = atom_idx_2
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, int]:
+        vals = [
+            self.atom_idx_1,
+            self.atom_idx_2,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class DistanceConstraint
+
+
+class PlanarAngleConstraint(Constraint):
+    name = "planar_angle"
+
+    atom_idx_1: int
+    atom_idx_2: int
+    atom_idx_3: int
+
+    def __init__(
+        self,
+        atom_idx_1: int,
+        atom_idx_2: int,
+        atom_idx_3: int,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                atom_idx_1=atom_idx_1,
+                atom_idx_2=atom_idx_2,
+                atom_idx_3=atom_idx_3,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.atom_idx_1 = atom_idx_1
+        self.atom_idx_2 = atom_idx_2
+        self.atom_idx_3 = atom_idx_3
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, int, int]:
+        vals = [
+            self.atom_idx_1,
+            self.atom_idx_2,
+            self.atom_idx_3,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class PlanarAngleConstraint
+
+
+class TorsionalAngleConstraint(Constraint):
+    name = "torsional_angle"
+
+    atom_idx_1: int
+    atom_idx_2: int
+    atom_idx_3: int
+    atom_idx_4: int
+
+    def __init__(
+        self,
+        atom_idx_1: int,
+        atom_idx_2: int,
+        atom_idx_3: int,
+        atom_idx_4: int,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                atom_idx_1=atom_idx_1,
+                atom_idx_2=atom_idx_2,
+                atom_idx_3=atom_idx_3,
+                atom_idx_4=atom_idx_4,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.atom_idx_1 = atom_idx_1
+        self.atom_idx_2 = atom_idx_2
+        self.atom_idx_3 = atom_idx_3
+        self.atom_idx_4 = atom_idx_4
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, int, int, int]:
+        vals = [
+            self.atom_idx_1,
+            self.atom_idx_2,
+            self.atom_idx_3,
+            self.atom_idx_4,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class TorsionalAngleConstraint
+
+
+class BennettProjConstraint(Constraint):
+    name = "bennett_proj"
+
+    atom_idx: int
+    vector: npt.NDArray[np.float64]
+
+    def __init__(
+        self,
+        atom_idx: int,
+        vector: npt.ArrayLike[np.floating],
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                atom_idx=atom_idx,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        vector = np.asarray(vector, dtype=float)
+        if (shape := vector.shape) != (3,):
+            msg = f"'vector' must have shape (3,) but has shape {shape}!"
+            raise ValueError(msg)
+
+        self.atom_idx = atom_idx
+        self.vector = vector
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, float, float, float]:
+        vals = [
+            self.atom_idx,
+            *self.vector,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class BennettProjConstraint
+
+
+class PotentialWallConstraint(Constraint):
+    name = "potential_wall"
+
+    prefactor: float
+    exponent: float
+    cutoff: float
+
+    def __init__(
+        self,
+        prefactor: float,
+        exponent: float,
+        cutoff: float,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = self.__class__._verify_types(
+                prefactor=prefactor,
+                exponent=exponent,
+                cutoff=cutoff,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.prefactor = prefactor
+        self.exponent = exponent
+        self.cutoff = cutoff
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[float, float, float]:
+        vals = [
+            self.prefactor,
+            self.exponent,
+            self.cutoff,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
+#end class PotentialWallConstraint
+
+
+class Constraints(CardBase):
+    name = "constraints"
+
+    constraint_map = MappingProxyType(
+        {
+            "type_coord":      TypeCoordConstraint,
+            "atom_coord":      AtomCoordConstraint,
+            "distance":        DistanceConstraint,
+            "planar_angle":    PlanarAngleConstraint,
+            "torsional_angle": TorsionalAngleConstraint,
+            "bennett_proj":    BennettProjConstraint,
+            "potential_wall":  PotentialWallConstraint,
+        }
+    )
+
+    constraints: list[Constraint]
+    tolerance: float | None
+
+    def __init__(
+        self,
+        constraints: list[Constraint],
+        tolerance: float | None = None,
+    ):
+        ...
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        # First line has no useful information
+        constr_info = lines[1].split()
+        nconstraints = int(constr_info[0])
+        if len(constr_info) > 1:
+            tolerance = float(constr_info[1])
+
+        constraints = []
+        for line in lines[2:]:
+            tokens = line.split()
+            cons_name = tokens[0]
+            if cons_name not in Constraints.constraint_map:
                 msg = (
-                    f'Element "{key}" has more than 2 Hubbard manifolds "{value}". '
-                    'Up to 3 manifolds are allowed in QE 7.1, but in that case '
-                    '2nd and 3rd manifolds must be defined as one effective manifold, '
-                    'e.g. "U Mn-3d 5.0" and "U Mn-3p-3s 3.0"'
-                    )
+                    f"Constraint {cons_name} is not known to Nexus!\n"
+                    f"Known constraints are {[*Constraints.constraint_map]}"
+                )
                 raise ValueError(msg)
-            #end if
-        #end for
-        contents += '\n'
-        return contents
-    #end def write_text
-#end class hubbard
+            cons_type = Constraints.constraint_map[cons_name]
+            cons_params = np.array(tokens[1:], dtype=np.float64)
+            constraints.append(
+                cons_type(*cons_params)
+            )
+
+        if (n_found := len(constraints)) != nconstraints:
+            msg = f"Expected {nconstraints} constraints but only found {n_found}!"
+            raise ValueError(msg)
+
+        return cls(constraints=constraints, tolerance=tolerance)
+    #end def read
+
+    @property
+    def nconstraints(self) -> int:
+        return len(self.constraints)
+
+    def write(self) -> str:
+        text = f"{self.name.upper()}\n"
+        text += f"  {self.nconstraints}"
+        if self.tolerance is not None:
+            text += f"  {self.tolerance:.8f}"
+
+        for cons in self.constraints:
+            text += f"    {cons.name}"
+            for val in cons.values:
+                fmt = "4d" if isinstance(val, int | np.integer) else "12.8f"
+                text += f" {val:{fmt}}"
+            text += "\n"
+        return text
+    #end def write
+#end class Constraints
+
+
+class Occupations(CardBase):
+    name = "occupations"
+
+    occupations = npt.NDArray[np.floating]
+    minority_spin_occs = npt.NDArray[np.floating] | None
+
+    def __init__(
+        self,
+        occupations: npt.ArrayLike[np.floating],
+        minority_spin_occs: npt.ArrayLike[np.floating] | None = None,
+    ) -> None:
+        self.occupations = np.asarray(occupations, dtype=float)
+        if len(shape := self.occupations.shape) != 1:
+            msg = f"Spin occupations must be a 1D array, but has shape {shape}!"
+            raise ValueError(msg)
+
+        if minority_spin_occs is not None:
+            if len(minority_spin_occs) != len(self.occupations):
+                msg = (
+                    "Majority and minority spin occupations must have the same length!\n"
+                    f"Majority occupations length: {len(occupations)}\n"
+                    f"Minority occupations length: {len(minority_spin_occs)}"
+                )
+                raise ValueError(msg)
+
+            self.minority_spin_occs = np.asarray(minority_spin_occs, dtype=float)
+        else:
+            self.minority_spin_occs = minority_spin_occs
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        spin_occs = []
+        for line in lines[1:]: # First line is just card name
+            spin_occs.extend(map(float, line.split()))
+
+        return cls(spin_occs)
+    #end def read
+
+    def post_process_read(self, pwscf_input: PwscfInput) -> None:
+        occupations = pwscf_input.system.params.get("occupations")
+        if occupations != "from_input":
+            msg = "Explicit occupations only available with 'occupations=from_input'!"
+            raise ValueError(msg)
+
+        nspin = pwscf_input.system.params.get("nspin")
+        if nspin is None or nspin == 1:
+            return
+
+        nbnd = pwscf_input.system.params.get("nbnd")
+        if nbnd is None:
+            msg = "Can not set Occupations when `nbnd` is not specified!"
+            raise ValueError(msg)
+        elif (n_occs := len(self.occupations)) / 2 != nbnd:
+            msg = (
+                "The number of occupations must be '2*nbnd' for a spin-polarized calculation!\n"
+                f"Number of Bands:       {nbnd}\n"
+                f"Number of Occupations: {n_occs}\n"
+            )
+            raise ValueError(msg)
+
+        occupations = self.occupations
+        self.occupations = occupations[:nbnd]
+        self.minority_spin_occs = occupations[nbnd:]
+    #end def post_process_read
+
+    def write(self) -> str:
+        return array_to_string(self.occupations)
+    #end def write
+#end class Occupations
+
+
+type HubbardParamName = Literal["U", "J0", "J", "V", "ALPHA"]
+
+class HubbardParamBase(ABC):
+    """Base class for representations of a Hubbard parameter in the :class:`Hubbard` card."""
+
+    sorted_param_names: ClassVar = ("U", "J0", "J", "V", "ALPHA")
+    valid_param_names: ClassVar = frozenset(sorted_param_names)
+    sorted_angular_terms: ClassVar = ("s", "p", "d", "f")
+    valid_angular_terms: ClassVar = frozenset(sorted_angular_terms)
+
+    hubbard_type: ClassVar[HubbardParamName]
+
+    @abstractmethod
+    def __init__(self, label: str, manifold: str, **kwargs) -> None:
+        ...
+
+    @staticmethod
+    def _check_label(label: str) -> str:
+        """Make sure the label is a valid element."""
+        if not Elements.is_element(label):
+            msg = f"Can not determine element for label '{label}'"
+            raise NotAnElementError(msg)
+
+        return label
+
+    @staticmethod
+    def _check_manifold[T: str | None](manifold: T) -> T:
+        """Check principle and angular terms, return lowercased manifold.
+
+        If ``manifold`` is ``None``, return ``None``.
+        """
+        if manifold is None:
+            return manifold
+
+        manifold_l = manifold[1].lower()
+        if manifold_l not in HubbardParamBase.valid_angular_terms:
+            msg = (
+                f"Invalid manifold '{manifold}', "
+                f"angular term must be one of {HubbardParamBase.sorted_angular_terms}"
+            )
+            raise ValueError(msg)
+
+        manifold_n = int(manifold[0])
+        if (
+            (manifold_l == "s" and manifold_n < (req_n := 1))
+            or (manifold_l == "p" and manifold_n < (req_n := 2))
+            or (manifold_l == "d" and manifold_n < (req_n := 3))
+            or (manifold_l == "f" and manifold_n < (req_n := 4))
+        ):
+            msg = (
+                f"Invalid manifold '{manifold}'!\n"
+                f"{manifold_l} orbital must have n >= {req_n}"
+            )
+            raise ValueError(msg)
+
+        return manifold.lower()
+
+    @classmethod
+    def _check_hub_type(cls, htype: str, expected: set[str] | None = None) -> str:
+        """Check if the Hubbard type (U, J0, J, etc.) matches the expected.
+
+        If the Hubbard type provided does not match the expected, this function
+        will suggest another Hubbard class if the value of ``htype`` is known.
+        """
+        if expected is None:
+            expected = {cls.hubbard_type}
+
+        expected = {i.upper() for i in expected}
+        msg = ""
+        if (hub_type := htype.upper()) not in expected:
+            msg += f"Line begins with '{hub_type}', not {expected}!\n"
+            if (hub_class := Hubbard.hub_type_map.get(hub_type)) is not None:
+                msg += f"Perhaps you should use `{hub_class.__name__}.from_str()` instead?"
+                raise ValueError(msg)
+            else:
+                msg += (
+                    "This value is not known by Nexus, please check your input!\n"
+                )
+
+        return msg
+
+    @staticmethod
+    def _join_lbl_mnfld(label: str, manifold: str, manifold_2: str | None = None) -> str:
+        text = f"{label.title()}-{manifold.lower()}"
+        if manifold_2 is not None:
+            text += f"-{manifold_2.lower()}"
+        return text
+
+    @abstractmethod
+    def write(self) -> str:
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_str(cls, text: str | list[str]) -> Self:
+        ...
+
+    def __repr__(self) -> str:
+        dct = self.__dict__
+        sig = inspect.signature(self.__init__).parameters
+        align = max(map(len, sig.keys()))
+        text = f"{type(self).__name__}(\n"
+        for param in sig:
+            text += f"    {param:{align}} = {dct.get(param)!r},\n"
+        text += ")"
+        return text
+#end class HubbardParamBase
+
+
+class HubbardU(HubbardParamBase):
+    hubbard_type = "U"
+
+    label: str
+    manifold: str
+    manifold_2: str | None
+    u_val: float
+    eigenstates: list[int]
+
+    def __init__(
+        self,
+        label: str,
+        manifold: str,
+        u_val: float,
+        *,
+        manifold_2: str | None = None,
+        eigenstates: Iterable[int] | None = None,
+    ) -> None:
+        self.label = super()._check_label(label)
+        self.manifold = super()._check_manifold(manifold)
+        self.manifold_2 = super()._check_manifold(manifold_2)
+        self.u_val = float(u_val)
+        self.eigenstates = eigenstates
+        if self.eigenstates is not None:
+            self.eigenstates = list(map(int, self.eigenstates))
+
+    def write(self) -> str:
+        text = "U"
+        lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold, self.manifold_2)
+        text += f"  {lbl_mnfld:>5}  {self.u_val:<6}"
+        if self.eigenstates is not None:
+            text += " ".join(map(str, self.eigenstates))
+        text += "\n"
+        return text
+
+    @classmethod
+    def from_str(cls, text: str) -> Self:
+        txt = text.strip()
+        if len(txt.splitlines()) > 1:
+            msg = "Got more than one line of text for a HubbardU value!"
+            raise ValueError(msg)
+
+        tokens = txt.split()
+        if msg := super()._check_hub_type(tokens[0]):
+            raise ValueError(msg)
+
+        lbl_mnfld = tokens[1].split("-")
+        label = lbl_mnfld[0]
+        manifold = lbl_mnfld[1]
+        manifold_2 = lbl_mnfld[2] if len(lbl_mnfld) == 3 else None
+        u_val = float(tokens[2])
+        eigenstates = [int(i) for i in tokens[3:]] if len(tokens) > 3 else None
+
+        return cls(
+            label=label,
+            manifold=manifold,
+            u_val=u_val,
+            manifold_2=manifold_2,
+            eigenstates=eigenstates,
+        )
+#end class HubbardU
+
+
+class HubbardJ0(HubbardParamBase):
+    hubbard_type = "J0"
+
+    label: str
+    manifold: str
+    manifold_2: str | None
+    j0_val: float
+
+    def __init__(
+        self,
+        label: str,
+        manifold: str,
+        j0_val: float,
+        *,
+        manifold_2: str | None = None
+    ) -> None:
+        self.label = super()._check_label(label)
+        self.manifold = super()._check_manifold(manifold)
+        self.manifold_2 = super()._check_manifold(manifold_2)
+        self.j0_val = float(j0_val)
+
+    def write(self) -> str:
+        text = "J0"
+        lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold, self.manifold_2)
+        text += f" {lbl_mnfld}  {self.j0_val:<6}\n"
+        return text
+
+    @classmethod
+    def from_str(cls, text: str) -> Self:
+        txt = text.strip()
+        if len(txt.splitlines()) > 1:
+            msg = "Got more than one line of text for a HubbardJ0 value!"
+            raise ValueError(msg)
+
+        tokens = txt.split()
+        if msg := super()._check_hub_type(tokens[0]):
+            raise ValueError(msg)
+
+        lbl_mnfld = tokens[1].split("-")
+        label = lbl_mnfld[0]
+        manifold = lbl_mnfld[1]
+        manifold_2 = lbl_mnfld[2] if len(lbl_mnfld) == 3 else None
+        j0_val = float(tokens[2])
+        return cls(
+            label=label,
+            manifold=manifold,
+            j0_val=j0_val,
+            manifold_2=manifold_2,
+        )
+#end class HubbardJ0
+
+
+class HubbardAlpha(HubbardParamBase):
+    hubbard_type = "ALPHA"
+
+    label: str
+    manifold: str
+    alpha_val: float
+    eigenstates: list[int]
+
+    def __init__(
+        self,
+        label: str,
+        manifold: str,
+        alpha_val: float,
+        *,
+        eigenstates: Iterable[int] | None = None,
+    ) -> None:
+        self.label = super()._check_label(label)
+        self.manifold = super()._check_manifold(manifold)
+        self.alpha_val = float(alpha_val)
+        self.eigenstates = list(map(int, eigenstates))
+
+    def write(self) -> str:
+        text = "ALPHA"
+        lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold)
+        text += f" {lbl_mnfld}  {self.alpha_val:<6}"
+        if self.eigenstates is not None:
+            text += " ".join(map(str, self.eigenstates))
+        text += "\n"
+        return text
+
+    @classmethod
+    def from_str(cls, text: str) -> Self:
+        txt = text.strip()
+        if len(txt.splitlines()) > 1:
+            msg = "Got more than one line of text for a HubbardAlpha value!"
+            raise ValueError(msg)
+
+        tokens = txt.split()
+        if msg := super()._check_hub_type(tokens[0]):
+            raise ValueError(msg)
+
+        lbl_mnfld = tokens[1].split("-")
+        label = lbl_mnfld[0]
+        manifold = lbl_mnfld[1]
+        alpha_val = float(tokens[2])
+        eigenstates = [int(i) for i in tokens[3:]] if len(tokens) > 3 else None
+
+        return cls(
+            label=label,
+            manifold=manifold,
+            alpha_val=alpha_val,
+            eigenstates=eigenstates,
+        )
+#end class HubbardAlpha
+
+
+class HubbardJ(HubbardParamBase):
+    hubbard_type = "J"
+
+    label: str
+    manifold: str
+    j_val: float | None = None
+    b_val: float | None = None
+    e2_val: float | None = None
+    e3_val: float | None = None
+
+    def __init__(
+        self,
+        label: str,
+        manifold: str,
+        j_val: float | None = None,
+        b_val: float | None = None,
+        e2_val: float | None = None,
+        e3_val: float | None = None,
+    ) -> None:
+        self.label = super()._check_label(label)
+        self.manifold = super()._check_manifold(manifold)
+
+        if all(i is None for i in {j_val, b_val, e2_val, e3_val}):
+            msg = "Must provide at least one non-None value for Hubbard J!"
+            raise ValueError(msg)
+
+        ang_momentum = self.manifold[1]
+        if ang_momentum == "d" and not (e2_val is None and e3_val is None):
+            msg = "Can not specify E2 and/or E3 value for d-orbital manifold!"
+            raise ValueError(msg)
+        elif ang_momentum == "f" and b_val is not None:
+            msg = "Can not specify B value for f-orbital manifold!"
+            raise ValueError(msg)
+
+        self.j_val = float(j_val) if j_val is not None else j_val
+        self.b_val = float(b_val) if b_val is not None else b_val
+        self.e2_val = float(e2_val) if e2_val is not None else e2_val
+        self.e3_val = float(e3_val) if e3_val is not None else e3_val
+
+    def write(self) -> str:
+        text = ""
+        lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold)
+        if (j_val := self.j_val) is not None:
+            text += f"J  {lbl_mnfld:>5}  {j_val:<6}\n"
+
+        if (b_val := self.b_val) is not None:
+            text += f"B  {lbl_mnfld:>5}  {b_val:<6}\n"
+            return text # Must be for d-orbital, can't have others
+
+        if (e2_val := self.e2_val) is not None:
+            text += f"E2 {lbl_mnfld:>5}  {e2_val:<6}\n"
+
+        if (e3_val := self.e3_val) is not None:
+            text += f"E3 {lbl_mnfld:>5}  {e3_val:<6}\n"
+
+        return text
+
+    @classmethod
+    def from_str(cls, text: str | list[str]) -> Self:
+        if isinstance(text, str):
+            text = text.strip().splitlines()
+
+        if (nlines := len(text)) > 3:
+            msg = f"Hubbard J values can have at most 3 lines, given {nlines}"
+            raise ValueError(msg)
+
+        values = {}
+        for idx, line in enumerate(text):
+            tokens = line.strip().split()
+            hubj_part = tokens[0].upper()
+            if msg := super()._check_hub_type(hubj_part, {"J", "B", "E2", "E3"}):
+                raise ValueError(msg)
+
+            if idx == 0:
+                label, manifold = tokens[1].split("-")
+            else:
+                tmp_lbl, tmp_mnfld = tokens[1].split("-")
+                if not (
+                    tmp_lbl.lower() == label.lower()
+                    and tmp_mnfld.lower() == manifold.lower()
+                ):
+                    msg = (
+                        "Multi-line input has inconsistent labels/manifolds!\n"
+                        f"Label/manifold #1: {label}-{manifold}\n"
+                        f"Label/manifold #{idx}: {tmp_lbl}-{tmp_mnfld}"
+                    )
+                    raise ValueError(msg)
+
+            values[hubj_part] = float(tokens[2])
+
+        return cls(
+            label=label,
+            manifold=manifold,
+            j_val=values.get("J"),
+            b_val=values.get("B"),
+            e2_val=values.get("E2"),
+            e3_val=values.get("E3"),
+        )
+
+    @classmethod
+    def join(cls, *hub_js: HubbardJ) -> list[Self]:
+        """Join multiple :class:`HubbardJ` instances together."""
+        if len(hub_js) == 0:
+            return []
+
+        if len(invalid := {i.__name__ for i in hub_js if not isinstance(i, cls)}) > 0:
+            msg = f"Received non-{cls.__name__} instance(s) of type(s) {invalid}"
+            raise TypeError(msg)
+
+        lbl_mnflds: dict[tuple[str, str], list[HubbardJ]] = {}
+        for hj in hub_js:
+            lbl_mnfld = (hj.label, hj.manifold)
+            if lbl_mnfld not in lbl_mnflds:
+                lbl_mnflds[lbl_mnfld] = []
+            lbl_mnflds[lbl_mnfld].append(hj)
+
+        joined = []
+        for (label, manifold), hjs in lbl_mnflds.items():
+            if manifold[1] == "d" and (nhjs := len(hjs)) > 2:
+                msg = (
+                    f"Found {nhjs} HubbardJ objects for {label}-{manifold}, "
+                    "but there can only be at most 2!"
+                )
+                raise ValueError(msg)
+            elif manifold[1] == "f" and (nhjs := len(hjs)) > 3:
+                msg = (
+                    f"Found {nhjs} HubbardJ objects for {label}-{manifold}, "
+                    "but there can only be at most 3!"
+                )
+                raise ValueError(msg)
+
+            values = {}
+            for hj in hjs:
+                current = {}
+                for k, v in (
+                    ("j_val", hj.j_val),
+                    ("b_val", hj.b_val),
+                    ("e2_val", hj.e2_val),
+                    ("e3_val", hj.e3_val),
+                ):
+                    if v is not None:
+                        current[k] = v
+
+                overlap = {
+                    k: old_v for k in current if (old_v := values.get(k)) is not None
+                }
+                if len(overlap) > 0:
+                    msg = "Found duplicate definitions of values for HubbardJ parameters!\n"
+                    for k, old_v in overlap.items():
+                        msg += f"Existing {k}: {old_v} - Duplicate {k}: {current[k]}\n"
+                    raise ValueError(msg)
+
+                values.update(current)
+
+            joined.append(
+                cls(
+                    label=label,
+                    manifold=manifold,
+                    **values
+                )
+            )
+
+        return joined
+#end class HubbardJ
+
+
+class HubbardV(HubbardParamBase):
+    hubbard_type = "V"
+
+    label_1: str
+    label_1_manifold: str
+    label_1_manifold_2: str | None
+    label_2: str
+    label_2_manifold: str
+    label_2_manifold_2: str | None
+    v_val: float
+
+    def __init__(
+        self,
+        label_1: str,
+        label_1_manifold: str,
+        label_1_idx: int,
+        label_2: str,
+        label_2_manifold: str,
+        label_2_idx: int,
+        v_val: float,
+        label_1_manifold_2: str | None = None,
+        label_2_manifold_2: str | None = None,
+    ) -> None:
+        self.label_1 = super()._check_label(label_1)
+        self.label_2 = super()._check_label(label_2)
+        self.label_1_manifold = super()._check_manifold(label_1_manifold)
+        self.label_2_manifold = super()._check_manifold(label_2_manifold)
+        self.label_1_manifold_2 = super()._check_manifold(label_1_manifold_2)
+        self.label_2_manifold_2 = super()._check_manifold(label_2_manifold_2)
+
+        self.label_1_idx = int(label_1_idx)
+        self.label_2_idx = int(label_2_idx)
+        self.v_val = float(v_val)
+
+    def write(self) -> str:
+        text = "V  "
+        lbl_1_mnfld = super()._join_lbl_mnfld(
+            self.label_1, self.label_1_manifold, self.label_1_manifold_2,
+        )
+
+        lbl_2_mnfld = super()._join_lbl_mnfld(
+            self.label_2, self.label_2_manifold, self.label_2_manifold_2,
+        )
+
+        text += (
+            f"{lbl_1_mnfld:8} "
+            f"{lbl_2_mnfld:8} "
+            f"{self.label_1_idx:3} "
+            f"{self.label_2_idx:3} "
+            f"{self.v_val:<6}\n"
+        )
+        return text
+
+    @classmethod
+    def from_str(cls, text: str) -> Self:
+        txt = text.strip()
+        if len(txt.splitlines()) > 1:
+            msg = "Got more than one line of text for a HubbardV value!"
+            raise ValueError(msg)
+
+        tokens = txt.split()
+        if msg := super()._check_hub_type(tokens[0]):
+            raise ValueError(msg)
+
+        lbl_mnfld_1 = tokens[1].split("-")
+        label_1 = lbl_mnfld_1[0]
+        label_1_manifold = lbl_mnfld_1[1]
+        label_1_manifold_2 = lbl_mnfld_1[2] if len(lbl_mnfld_1) == 3 else None
+        label_1_idx = int(tokens[3])
+
+        lbl_mnfld_2 = tokens[2].split("-")
+        label_2 = lbl_mnfld_2[0]
+        label_2_manifold = lbl_mnfld_2[1]
+        label_2_manifold_2 = lbl_mnfld_2[2] if len(lbl_mnfld_2) == 3 else None
+        label_2_idx = int(tokens[4])
+
+        v_val = float(tokens[5])
+
+        return cls(
+            label_1=label_1,
+            label_1_manifold=label_1_manifold,
+            label_1_idx=label_1_idx,
+            label_2=label_2,
+            label_2_manifold=label_2_manifold,
+            label_2_idx=label_2_idx,
+            v_val=v_val,
+            label_1_manifold_2=label_1_manifold_2,
+            label_2_manifold_2=label_2_manifold_2,
+        )
+
+    def is_onsite(self) -> bool:
+        return self.label_1_idx == self.label_2_idx
+
+    def is_intersite(self) -> bool:
+        return self.label_1_idx != self.label_2_idx
+
+    @overload
+    @staticmethod
+    def sort_by_interaction_type(
+        v_params: list[HubbardU | HubbardJ0 | HubbardV],
+        standard: str | None = None,
+        background: str | None = None,
+    ) -> list[HubbardU | HubbardJ0 | HubbardV]:
+        ...
+    @overload
+    @staticmethod
+    def sort_by_interaction_type(
+        v_params: list[HubbardV],
+        standard: str,
+        background: str,
+    ) -> list[HubbardV]:
+        ...
+
+    @staticmethod
+    def sort_by_interaction_type(
+        v_params: list[HubbardU | HubbardV],
+        standard: str | None = None,
+        background: str | None = None,
+    ) -> list[HubbardU | HubbardV]:
+        """Sort a list of Hubbard V parameters by their interaction type.
+
+        The QE docs state that the 4 types of interaction must be in the
+        following order:
+
+        1. Standard-Standard
+        2. Standard-Background
+        3. Background-Background
+        4. Background-Standard
+
+        Parameters
+        ----------
+        v_params : list of HubbardV or HubbardU
+            List of parameters to sort. Can contain **AT MOST** one
+            :class:`HubbardU` parameter and **AT MOST** one :class:`HubbardJ0`
+            parameter. If there is one :class:`HubbardU` or :class:`HubbardJ0`
+            instance, then *both* ``standard`` and ``background`` are optional.
+        standard : str, optional
+            The full name of the standard label+manifold, e.g. ``Fe-3d``. If
+            this is not provided, you must provide either ``background`` or a
+            :class:`HubbardU`/:class:`HubbardJ0` instance in ``v_params``.
+        background : str, optional
+            The full name of the background label+manifold, e.g. ``Fe-3d-4s``.
+            If this is not provided, you must provide either ``standard`` or a
+            :class:`HubbardU`/:class:`HubbardJ0` instance in ``v_params``.
+        """
+        if len([i for i in v_params if isinstance(i, HubbardU)]) > 1:
+            msg = "Can only pass at most 1 Hubbard U parameter!"
+            raise ValueError(msg)
+        elif len([i for i in v_params if isinstance(i, HubbardJ0)]) > 1:
+            msg = "Can only pass at most 1 Hubbard J0 parameter!"
+            raise ValueError(msg)
+        elif (
+            (standard is None and background is None)
+            and not any(isinstance(p, HubbardU | HubbardJ0) for p in v_params)
+        ):
+            msg = "Can only infer standard AND background when a HubbardU/J0 value is present!"
+            raise ValueError(msg)
+
+        if standard is None:
+            hub_uj0 = next(i for i in v_params if isinstance(i, HubbardU | HubbardJ0))
+            if hub_uj0.manifold_2 is not None:
+                msg = "Hubbard U/J0 cannot have more than 1 manifold for a DFT+U+V calculation!"
+                raise ValueError(msg)
+
+            standard = HubbardParamBase._join_lbl_mnfld(hub_uj0.label, hub_uj0.manifold)
+
+        if background is None:
+            hvs = iter(i for i in v_params if isinstance(i, HubbardV) and i.is_onsite())
+            while background is None:
+                hv = next(hvs)
+                tmp = HubbardParamBase._join_lbl_mnfld(
+                    hv.label_1, hv.label_1_manifold, hv.label_1_manifold_2,
+                )
+                tmp2 = HubbardParamBase._join_lbl_mnfld(
+                    hv.label_2, hv.label_2_manifold, hv.label_2_manifold_2,
+                )
+                if tmp != standard:
+                    background = tmp
+                elif tmp2 != standard:
+                    background = tmp2
+
+        if standard == background:
+            msg = (
+                "The standard cannot be the same as the background!\n"
+                f"Standard:   '{standard}'\n"
+                f"Background: '{background}'"
+                )
+            raise ValueError(msg)
+
+        # Populate list with defaults
+        labeled_params = {i: None for i in range(6)}
+        intersite_index = 0
+        for param in v_params:
+            if isinstance(param, HubbardU):
+                labeled_params[0] = param
+                continue
+            if isinstance(param, HubbardJ):
+                labeled_params[1] = param
+                continue
+
+            mnfld_1 = HubbardParamBase._join_lbl_mnfld(
+                param.label_1, param.label_1_manifold, param.label_1_manifold_2,
+            )
+            mnfld_2 = HubbardParamBase._join_lbl_mnfld(
+                param.label_2, param.label_2_manifold, param.label_2_manifold_2,
+            )
+
+            if param.is_intersite():
+                if mnfld_1 == standard:
+                    labeled_params[intersite_index + 1001] = param
+                    intersite_index += 1
+                else:
+                    labeled_params[intersite_index + 10001] = param
+                    intersite_index += 1
+                continue
+
+            if (mnfld_1, mnfld_2) == (standard, standard):
+                if labeled_params.get(0) is not None:
+                    msg = "Standard-Standard HubbardV found with existing HubbardU!"
+                    raise ValueError(msg)
+
+                labeled_params[2] = param
+            elif (mnfld_1, mnfld_2) == (standard, background):
+                labeled_params[3] = param
+            elif (mnfld_1, mnfld_2) == (background, background):
+                labeled_params[4] = param
+            elif (mnfld_1, mnfld_2) == (background, standard):
+                labeled_params[5] = param
+            else:
+                msg = (
+                    "Unknown relationship detected!\n"
+                    f"Parameter: {param.write()}"
+                )
+                raise ValueError(msg)
+
+        sorted_params = [ # Sort by key, extract only non-None values
+            i[1] for i in sorted(labeled_params.items(), key=lambda k: k[0])
+            if i[1] is not None
+        ]
+        return sorted_params
+#end class HubbardV
+
+
+type HubbardSpecifier = Literal["atomic", "ortho-atomic", "norm-atomic", "wf", "pseudo"]
+
+
+class Hubbard(CardBase):
+    name = "hubbard"
+
+    hub_type_map = MappingProxyType(
+        {
+            "U":      HubbardU,
+            "ALPHA":  HubbardAlpha,
+            "J0":     HubbardJ0,
+            "J":      HubbardJ,
+            "B":      HubbardJ,
+            "E2":     HubbardJ,
+            "E3":     HubbardJ,
+            "V":      HubbardV,
+        }
+    )
+
+    valid_specifiers = frozenset(
+        {"atomic", "ortho-atomic", "norm-atomic", "wf", "pseudo"}
+    )
+
+    specifier: HubbardSpecifier
+    hubbard_params: list[HubbardParamBase]
+
+    def __init__(
+        self,
+        specifier: HubbardSpecifier,
+        hubbard_params: list[HubbardParamBase],
+        *,
+        disable_sort_and_group: bool = False,
+    ) -> None:
+        spec_low = specifier.lower()
+        if spec_low not in Hubbard.valid_specifiers:
+            msg = (
+                f"Supplied specifier {specifier} is not known by Nexus!\n"
+                f"Valid specifiers are {Hubbard.valid_specifiers}"
+            )
+            raise ValueError(msg)
+
+        self.specifier = spec_low
+        if not all(isinstance(i, HubbardParamBase) for i in hubbard_params):
+            msg = (
+                "Invalid type found in `hubbard_params`!\n"
+                "Expected instance of one or more of "
+                f"{[i.__name__ for i in Hubbard.hub_type_map.values()]}"
+            )
+            raise TypeError(msg)
+
+        if not disable_sort_and_group:
+            self.hubbard_params = Hubbard.group_and_sort(hubbard_params)
+        else:
+            self.hubbard_params = hubbard_params
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        specifier = lines[0].split()[1].strip("{}()").lower()
+        if specifier not in Hubbard.valid_specifiers:
+            msg = (
+                f"Invalid specifier '{specifier}' for Hubbard card!\n"
+                f"Valid specifiers are {sorted(Hubbard.valid_specifiers)}"
+            )
+            raise ValueError(msg)
+
+        dft_u = False
+        dft_uj = False
+        dft_uv = False
+
+        hub_types = {i.split()[0].upper() for i in lines[1:]}
+
+        if hub_types.issubset({"U", "J0", "ALPHA"}):
+            dft_u = True
+        elif hub_types.issubset({"U", "J", "B", "E2", "E3"}):
+            dft_uj = True
+        elif hub_types.issubset({"U", "J0", "V"}):
+            dft_uv = True
+
+        if not any((dft_u, dft_uj, dft_uv)):
+            msg = (
+                "Could not determine the calculation type!\n"
+                f"Detected Hubbard parameter types: {hub_types}"
+            )
+            raise ValueError(msg)
+
+        if dft_u + dft_uj + dft_uv > 1:
+            msg = "Detected incompatible sets of Hubbard parameters!"
+            raise ValueError(msg)
+
+        hubbard_params = []
+        for idx, line in enumerate(lines[1:]):
+            line = line.strip()
+            hub_type = line.split()[0].upper()
+            try:
+                hubbard_params.append(
+                    Hubbard.hub_type_map[hub_type].from_str(line)
+                )
+            except Exception as exc:
+                exc.add_note(f"Error occurred on line {idx} of the HUBBARD card")
+                raise
+
+        return cls(specifier=specifier, hubbard_params=hubbard_params)
+
+    def write(self) -> str:
+        text = f"HUBBARD ({self.specifier})"
+        for param in self.hubbard_params:
+            text += f"    {param.write()}"
+        return text
+
+    @staticmethod
+    def group_and_sort(hubbard_params: list[HubbardParamBase]) -> list[HubbardParamBase]:
+        """Group and sort a list of Hubbard parameters.
+
+        Notes
+        -----
+        If they are present, :class:`HubbardJ` parameters are joined using
+        :meth:`HubbardJ.join`, which will take ``J`` and ``B`` or ``E2``/``E3``
+        values for the same label-manifold into a single instance of the class.
+
+        After this, parameters are grouped by their label-manifold, even between
+        different types of Hubbard parameters.
+
+        For regular DFT+U, :class:`HubbardU`, :class:`HubbardJ0`, and
+        :class:`HubbardAlpha` parameters are grouped.
+
+        For DFT+U+J, the :class:`HubbardU` and :class:`HubbardJ` parameters for
+        the same label-manifold are grouped.
+
+        For DFT+U+V, :class:`HubbardU`, :class:`HubbardJ0`, and
+        :class:`HubbardV` parameters for the same label-manifold are grouped.
+        The parameters are sorted by :meth:`HubbardV.sort_by_interaction_type`.
+        """
+        import pprint
+        j_params = [i for i in hubbard_params if isinstance(i, HubbardJ)]
+        for p in j_params:
+            hubbard_params.remove(p)
+        joined_j_params = HubbardJ.join(*j_params)
+        hubbard_params.extend(joined_j_params)
+
+        # Track standard (std) and background (bg) manifolds.
+        # Enables grouping the bg-bg HubbardV sites.
+        std_bg_lbl_mnflds = set()
+        bg_std_lbl_mnflds = {}
+        lbl_mnfld_params: dict[str, list[HubbardParamBase]] = {}
+        loop_count = 0
+        while len(hubbard_params) > 0 and loop_count < 20:
+            # This loop removes the first item of the input list, gets its label
+            # and manifold (with optional second manifold), and cataloging it in
+            # the lbl_mnfld_params dictionary.
+            # In the case the parameter is a background-background HubbardV and
+            # we don't know what the related standard is, it appends the
+            # parameter to the list which guarantees that it will have a known
+            # standard by the time it is hit again.
+            # In case this logic fails for any reason, the loop count should be
+            # incremented and eventually will cause the loop to stop.
+            param = hubbard_params.pop(0)
+            if isinstance(param, HubbardU | HubbardJ0 | HubbardAlpha | HubbardJ):
+                if (
+                    isinstance(param, HubbardU | HubbardJ0)
+                    and param.manifold_2 is not None
+                ):
+                    lbl_mnfld = (param.label, param.manifold, param.manifold_2)
+                else:
+                    lbl_mnfld = (param.label, param.manifold)
+                    std_bg_lbl_mnflds.add(lbl_mnfld)
+
+                if lbl_mnfld not in lbl_mnfld_params:
+                    lbl_mnfld_params[lbl_mnfld] = []
+
+                lbl_mnfld_params[lbl_mnfld].append(param)
+            elif isinstance(param, HubbardV):
+                if param.label_1_manifold_2 is not None:
+                    lbl_mnfld_1 = (
+                        param.label_1, param.label_1_manifold, param.label_1_manifold_2
+                    )
+                else:
+                    lbl_mnfld_1 = (param.label_1, param.label_1_manifold)
+
+                if param.label_2_manifold_2 is not None:
+                    lbl_mnfld_2 = (
+                        param.label_2, param.label_2_manifold, param.label_2_manifold_2
+                    )
+                else:
+                    lbl_mnfld_2 = (param.label_2, param.label_2_manifold)
+
+                if lbl_mnfld_1 in std_bg_lbl_mnflds and lbl_mnfld_2 not in std_bg_lbl_mnflds:
+                    bg_std_lbl_mnflds[lbl_mnfld_2] = lbl_mnfld_1
+
+                if (
+                    lbl_mnfld_1 == lbl_mnfld_2
+                    and len(lbl_mnfld_1) == 2
+                    and not (
+                        lbl_mnfld_1 in bg_std_lbl_mnflds
+                        or lbl_mnfld_1 in std_bg_lbl_mnflds
+                    )
+                ):
+                    std_bg_lbl_mnflds.add(lbl_mnfld_1)
+
+                if lbl_mnfld_1 in std_bg_lbl_mnflds:
+                    standard = lbl_mnfld_1
+                elif lbl_mnfld_1 in bg_std_lbl_mnflds:
+                    standard = bg_std_lbl_mnflds[lbl_mnfld_1]
+                elif lbl_mnfld_2 in std_bg_lbl_mnflds:
+                    standard = lbl_mnfld_2
+                elif lbl_mnfld_2 in bg_std_lbl_mnflds:
+                    standard = bg_std_lbl_mnflds[lbl_mnfld_2]
+                else:
+                    # This is a bg-bg interaction with an unknown corresponding standard.
+                    hubbard_params.append(param)
+                    loop_count += 1
+                    continue
+
+                if standard not in lbl_mnfld_params:
+                    lbl_mnfld_params[standard] = []
+                lbl_mnfld_params[standard].append(param)
+
+            loop_count = 0
+
+        if loop_count >= 20 or len(hubbard_params) > 0:
+            msg = (
+                "Logic for sorting/grouping Hubbard parameters failed!\n"
+                "This is a developer error!\n"
+                "Current status of grouping:\n"
+                f"lbl_mnfld_params = {pprint.pformat(lbl_mnfld_params, indent=4)}\n"
+                f"std_bg_lbl_mnflds = {std_bg_lbl_mnflds}\n"
+                f"bg_std_lbl_mnflds = {pprint.pformat(bg_std_lbl_mnflds, indent=4)}\n"
+                "Remaining parameters:\n"
+            )
+            for leftover_param in hubbard_params:
+                msg += leftover_param.write()
+            raise NexusError(msg)
+
+        param_order = list(Hubbard.hub_type_map)
+        sorted_params = {}
+        for keys, values in lbl_mnfld_params.items():
+            if any(isinstance(i, HubbardV) for i in values):
+                std = HubbardParamBase._join_lbl_mnfld(*keys)
+                sorted_values = HubbardV.sort_by_interaction_type(
+                    values,
+                    standard=std,
+                    background=None,
+                )
+            else:
+                sorted_values = sorted(
+                    values,
+                    key=lambda x: param_order.index(x.hubbard_type)
+                )
+            sorted_params[keys] = sorted_values
+
+        return sorted_params
+#end class Hubbard
 
 
 class PwscfInput(SimulationInput):
@@ -1457,8 +3158,9 @@ class PwscfInput(SimulationInput):
         'atomic_species',
         'atomic_positions',
         'k_points',
-        )
+    )
 
+    phys_sys: PhysicalSystem
     control: Control
     system: System
     electrons: Electrons
@@ -1466,62 +3168,153 @@ class PwscfInput(SimulationInput):
     cell: Cell | None
     fcp: Fcp | None
     rism: Rism | None
+    atomic_species: AtomicSpecies
+    atomic_positions: AtomicPositions
+    k_points: KPoints
+    cell_parameters: CellParameters | None
+    occupations: Occupations | None
+    constraints: Constraints | None
+    # atomic_velocities: AtomicVelocities | None
+    atomic_forces: AtomicForces | None
+    # solvents: Solvents | None
+    hubbard: Hubbard | None
 
-    namelist_types: ClassVar = MappingProxyType({
-        "control"   : Control,
-        "system"    : System,
-        "electrons" : Electrons,
-        "ions"      : Ions,
-        "cell"      : Cell,
-        "fcp"       : Fcp,
-        "rism"      : Rism,
-        })
+    namelist_types: ClassVar = MappingProxyType(
+        {
+            "control"   : Control,
+            "system"    : System,
+            "electrons" : Electrons,
+            "ions"      : Ions,
+            "cell"      : Cell,
+            "fcp"       : Fcp,
+            "rism"      : Rism,
+        }
+    )
     namelists: ClassVar[tuple[NamelistName]] = tuple(namelist_types.keys())
 
-    card_types: ClassVar = MappingProxyType({
-        "atomic_species"   : atomic_species,
-        "atomic_positions" : atomic_positions,
-        "atomic_forces"    : atomic_forces,
-        "k_points"         : k_points,
-        "cell_parameters"  : cell_parameters,
-        "constraints"      : constraints,
-        "occupations"      : occupations,
-        "hubbard"          : hubbard,
-        })
-    cards: ClassVar = tuple(card_types)
+    card_types: ClassVar = MappingProxyType(
+        {
+            "atomic_species"   : AtomicSpecies,
+            "atomic_positions" : AtomicPositions,
+            "k_points"         : KPoints,
+            "cell_parameters"  : CellParameters,
+            "occupations"      : Occupations,
+            "constraints"      : Constraints,
+            "atomic_forces"    : AtomicForces,
+            "hubbard"          : Hubbard,
+        }
+    )
+    cards: ClassVar[tuple[CardName]] = tuple(card_types)
+    ordered_elements: ClassVar = namelists + cards
+    allowed_attrs: ClassVar = frozenset({*ordered_elements, "phys_sys"})
 
-    # element_types = obj(**section_types)
-    # element_types.update(**card_types)
+    def __init__(
+        self,
+        *,
+        filepath: PathLike | None = None,
+        check: bool = False,
+        version: str | None = None,
+        phys_sys: PhysicalSystem | None = None,
+        verbose: bool = False,
+        strict: bool = False,
+        **kwargs: PwscfInputType,
+    ):
+        if filepath is not None:
+            filepath = Path(filepath).resolve(strict=True)
+            self.read(filepath)
 
-    def __init__(self,*elements):
-        elements = list(elements)
-        if len(elements)==1 and os.path.exists(elements[0]):
-            self.read(elements[0])
-        elif len(elements)==1 and ('.' in elements[0] or '/' in elements[0]):
-            msg = 'input file '+elements[0]+' does not exist'
-            raise ValueError(msg)
-        else:
-            for element in self.required_elements:
-                if element not in elements:
-                    elements.append(element)
-                #end if
-            #end for
-            for element in elements:
-                if element in self.element_types:
-                    self[element] = self.element_types[element]()
-                else:
-                    msg = (
-                        '  Error: '+element+' is not a pwscf element\n'
-                        '  valid options are '+str(list(self.element_types.keys()))
-                        )
-                    raise ValueError(msg)
-                #end if
-            #end for
-        #end if
+        kwargs = {k.lower(): v for k, v in kwargs.items()}
+        for group in self.ordered_elements:
+            if group not in kwargs:
+                continue
+            self._process_group(
+                group,
+                kwargs.pop(group),
+                check=check,
+                version=version,
+                phys_sys=phys_sys,
+                verbose=verbose,
+                strict=strict,
+            )
+
+        if len(kwargs) == 0:
+            if self.has_required_elements():
+                return # Early return, we've processed all the groups.
+            else:
+                msg = "Not all required groups have been supplied!"
+                raise ValueError(msg)
+
+
     #end def __init__
 
 
-    def read_text(self,contents,filepath=None):
+    def _separate_group_kwargs(
+        self, kwargs: dict[str, PwscfInputType]
+    ) -> dict[NamelistName | CardName, dict[str, PwscfInputType]]:
+        groups = {}
+        for nmlist_name, nmlist_type in self.namelist_types.items():
+            current = {}
+            for var in nmlist_type.namelist_def:
+                if (value := kwargs.pop(var.name, unset)) is not unset:
+                    current[var.name] = value
+
+            if len(current) > 0:
+                groups[nmlist_name] = current
+
+        return groups
+
+
+    def _process_group(
+        self,
+        group: CardName | NamelistName,
+        value: CardBase | NamelistBase | Mapping,
+        *,
+        check: bool,
+        version: str | None,
+        phys_sys: PhysicalSystem | None,
+        verbose: bool,
+        strict: bool,
+    ) -> None:
+        if group in self.namelists:
+            group_class = self.namelist_types[group]
+        else:
+            group_class = self.card_types[group]
+
+        if isinstance(value, group_class):
+            setattr(self, group, value)
+        elif isinstance(value, Mapping):
+            if group_class in self.namelist_types.values():
+                setattr(
+                    self,
+                    group,
+                    group_class(
+                        check=check,
+                        version=version,
+                        phys_sys=phys_sys,
+                        verbose=verbose,
+                        strict=strict,
+                        **value,
+                    ),
+                )
+            else:
+                setattr(
+                    self,
+                    group,
+                    group_class(**value)
+                )
+        else:
+            msg = (
+                f"Invalid value type '{type(value).__name__}'!\n"
+                "This is a developer error!"
+            )
+            raise NexusError(msg)
+
+
+    def has_required_elements(self) -> bool:
+        return all(hasattr(self, elem) for elem in PwscfInput.required_elements)
+
+
+    def read_text(self,contents, filepath=None):
         lines = contents.splitlines()
         in_element = False
         elem_type = None
@@ -1578,7 +3371,7 @@ class PwscfInput(SimulationInput):
             #end if
             self[elem_name].read(c)
         #end if
-        #post-process hubbard u and related variables
+        # post-process hubbard u and related variables
         #for element in self:
         #    element.post_process_read(self)
         ##end for
@@ -1603,50 +3396,25 @@ class PwscfInput(SimulationInput):
     #end def write_text
 
 
-    def get_common_vars(self,*vars):
-        scale = 1.0
-        axes  = None
-        kaxes = None
+    @property
+    def alat(self) -> float:
+        """Either ``celldm(1)`` or 1.0"""
+        if (celldm1 := self.system.params.get("celldm(1)")) is not None:
+            return celldm1
+        else:
+            return 1.0
 
-        if 'celldm(1)' in self.system:
-            scale = self.system['celldm(1)']
-        #end if
-        if 'cell_parameters' in self:
-            axes = scale*np.array(self.cell_parameters.vectors)
-            kaxes = 2*pi*inv(axes).T
-        #end if
+    @property
+    def axes(self) -> npt.NDArray[np.float64]:
+        return self.alat * np.asarray(self.cell_parameters.vectors, dtype=float)
 
-        vals = []
-        loc = locals()
-        msg = ""
-        for var in vars:
-            if var in loc:
-                val = loc[var]
-                if val is None:
-                    msg += 'requested variable '+var+' was not found\n'
-                #end if
-            else:
-                msg += 'requested variable '+var+' is not computed by get_common_vars\n'
-                val = None
-            #end if
-            vals.append(val)
-        #end for
-        if len(msg) > 0:
-            msg = (
-                'could not get requested variables:\n'
-                f'{msg}'
-                )
-            raise KeyError(msg)
-        #end if
-        return vals
-    #end def get_common_vars
+    @property
+    def kaxes(self) -> npt.NDArray[np.float64]:
+        return 2 * pi * inv(self.axes).T
 
-    def incorporate_hubbard(self, hubbard_result):
-        hub_obj = hubbard()
-        hubbard_result = hubbard_result.split('\n')
-        hub_obj.specifier = hubbard_result[1].split()[-1]
-        hub_obj.read_text(hubbard_result[2:])
-        self.hubbard = hub_obj
+    def incorporate_hubbard(self, hubbard_result: str):
+        hubbard_result = hubbard_result.splitlines()
+        self.hubbard = Hubbard.read(hubbard_result)
     #end def incorporate_hubbard
 
     def incorporate_system(self,system,elem_order=None):
@@ -1718,7 +3486,7 @@ class PwscfInput(SimulationInput):
         #end if
 
         # set pseudopotentials for renamed atoms (e.g. Cu3 is same as Cu)
-        pp = self.atomic_species.pseudopotentials
+        pp = self.atomic_species.pseudos
         for atom in self.atomic_species.atoms:
             if atom not in pp:
                 iselem,element = Elements.is_element(atom,return_element=True)
@@ -1730,7 +3498,7 @@ class PwscfInput(SimulationInput):
         #end for
 
         self.atomic_positions.specifier = 'bohr'
-        self.atomic_positions.positions = s.pos.copy()
+        self.atomic_positions.pos = s.pos.copy()
         self.atomic_positions.atoms     = list(s.elem)
         if s.frozen is not None:
             frozen = s.frozen
@@ -1808,7 +3576,7 @@ class PwscfInput(SimulationInput):
         self.atomic_species.atoms  = sorted(system.ion_labels)
         self.atomic_species.masses = masses
         # set pseudopotentials for renamed atoms (e.g. Cu3 is same as Cu)
-        pp = self.atomic_species.pseudopotentials
+        pp = self.atomic_species.pseudos
         for atom in self.atomic_species.atoms:
             if atom not in pp:
                 iselem,element = Elements.is_element(atom,return_element=True)
@@ -1847,7 +3615,7 @@ class PwscfInput(SimulationInput):
             raise NotImplementedError(msg)
         #end if
 
-        scale,axes,_ = self.get_common_vars('scale','axes','kaxes')
+        scale, axes = self.alat, self.axes
 
         elem = list(self.atomic_positions.atoms)
         ap = deepcopy(self.atomic_positions)
@@ -1920,7 +3688,7 @@ class PwscfInput(SimulationInput):
         for s in self.values():
             if isinstance(s,Section):
                 array_keys = []
-                for k in s.keys():
+                for k in s:
                     if '(' in k:
                         array_keys.append(k)
                     #end if
@@ -2093,10 +3861,10 @@ def generate_any_pwscf_input(**kwargs):
     hubbard_u         = kwargs.get('hubbard_u',None)
     # Pre 7.2 Hubbard tags
     hub_keys_pre72 = 'hubbard_u hubbard_j0 hubbard_j U_projection_type'.lower().split()
-    has_pre72_keys = any((_ in kwargs.keys() for _ in hub_keys_pre72))
+    has_pre72_keys = any(_ in kwargs for _ in hub_keys_pre72)
     # QE >=7.2 Hubbard tags
     hub_keys_v72 = 'hubbard hubbard_proj'.lower().split()
-    has_v72_keys = any((_ in kwargs.keys() for _ in hub_keys_v72))
+    has_v72_keys = any(_ in kwargs for _ in hub_keys_v72)
     if has_pre72_keys + has_v72_keys > 1:
         msg = f'Please use {hub_keys_pre72} for QE version <7.2 and {hub_keys_v72} for QE version >=7.2'
         raise ValueError(msg)
@@ -2213,7 +3981,7 @@ def generate_any_pwscf_input(**kwargs):
                 pw.atomic_species.atoms = sorted(species)
             #end if
             pw.atomic_species.masses = obj(mass)
-            pp = pw.atomic_species.pseudopotentials
+            pp = pw.atomic_species.pseudos
             for atom in pw.atomic_species.atoms:
                 if atom not in pp:
                     iselem, element = Elements.is_element(atom, return_element=True)
@@ -2349,23 +4117,23 @@ def generate_any_pwscf_input(**kwargs):
     # occupations card
     if isinstance(occ,(list,np.ndarray)):
         pw.system.occupations = 'from_input'
-        occ_card = occupations()
+        occ_card = Occupations()
         occ_card.occupations = np.array(occ,dtype=float)
         pw.occupations = occ_card
     #end if
 
     # hubbard card
     if hubbard_input is not None:
-        hubbard_card = hubbard()
+        hubbard_card = Hubbard()
         hubbard_card.system  = system
         hubbard_card.hubbard = hubbard_input
         pw.hubbard = hubbard_card
         if hubbard_option is None:
             hubbard_option = hubbard_card.default_specifier
         else:
-            if hubbard_option not in hubbard_card.available_specifiers:
+            if hubbard_option not in hubbard_card.valid_specifiers:
                 msg = (
-                    f'HUBBARD card specifier "{hubbard_option}" is not valid. Available specifiers: {hubbard_card.available_specifiers}'
+                    f'HUBBARD card specifier "{hubbard_option}" is not valid. Available specifiers: {hubbard_card.valid_specifiers}'
                     )
                 raise ValueError(msg)
             #end if
@@ -2753,13 +4521,12 @@ def generate_relax_input(*,
     if assume_isolated is not None:
         pw.system.assume_isolated = assume_isolated
     #end if
-    if occupations is not None:
-        if occupations=='smearing':
-            pw.system.update(
-                occupations = occupations,
-                smearing    = smearing,
-                degauss     = degauss,
-                )
+    if occupations is not None and occupations=='smearing':
+        pw.system.update(
+            occupations = occupations,
+            smearing    = smearing,
+            degauss     = degauss,
+            )
         #end if
     #end if
     pw.electrons.update(

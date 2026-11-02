@@ -60,7 +60,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, TypeAlias
+from types import MappingProxyType
+from typing import Literal
 
 if sys.version_info[0:3] < (3, 12, 0):
     msg = "This script must be run with Python 3.12.0 or greater!\n"
@@ -69,14 +70,14 @@ if sys.version_info[0:3] < (3, 12, 0):
 try:
     import xmltodict
 except ImportError as err:
-    msg = "The Python package xmltodict is required for this script!"
-    raise err(msg)
+    err.add_note("The Python package xmltodict is required for this script!")
+    raise
 
 try:
     from packaging.version import Version
 except ImportError as err:
-    msg = "The Python package 'packaging' is required for this script!"
-    raise err(msg)
+    err.add_note("The Python package 'packaging' is required for this script!")
+    raise
 
 # These are the dates of the commits attached to the INPUT_PW.def
 # files for each version tag in the QE GitLab. Update as needed.
@@ -121,7 +122,7 @@ QE_DOC_VERSION_DATES = {
     Version("7.5.0"): "30-06-2025", # https://gitlab.com/QEF/q-e/-/blob/qe-7.5/PW/Doc/INPUT_PW.def
     Version("7.6.0"): "02-06-2026", # https://gitlab.com/QEF/q-e/-/blob/qe-7.6/PW/Doc/INPUT_PW.def
 }
-EARLIEST = list(QE_DOC_VERSION_DATES.keys())[0]
+EARLIEST = next(iter(QE_DOC_VERSION_DATES.keys()))
 LATEST = list(QE_DOC_VERSION_DATES.keys())[-1]
 
 def get_total_dict(
@@ -190,7 +191,7 @@ def get_total_dict(
 #end def get_total_dict
 
 
-PwscfInputType: TypeAlias = str | bool | int | float
+type PwscfInputType = str | bool | int | float
 
 @dataclass
 class NamelistParamDefinition:
@@ -218,12 +219,14 @@ class PWDef:
     """
 
     #: Fortran to Python datatype mapping
-    f2p_datatype = {
-        "INTEGER": "int",
-        "REAL": "float",
-        "LOGICAL": "bool",
-        "CHARACTER": "str",
-    }
+    f2p_datatype = MappingProxyType(
+        {
+            "INTEGER": "int",
+            "REAL": "float",
+            "LOGICAL": "bool",
+            "CHARACTER": "str",
+        }
+    )
 
     def __init__(self, input_data: dict, version: str | Version):
         self.version = Version(version)
@@ -338,7 +341,7 @@ class PWDef:
             # really have options per-se, it just uses the options tag
             # because apparently the info tag was out sick when that was
             # written.
-            if "options" in var.keys() and datatype == "str":
+            if "options" in var and datatype == "str":
                 allowed_values = []
                 for option in var["options"]["opt"]:
                     # Remove extra single quote marks
@@ -484,7 +487,7 @@ class PWDef:
                     else:
                         required = False
 
-                if "start" in vargroup.keys() or "end" in vargroup.keys():
+                if "start" in vargroup or "end" in vargroup:
                     msg = (
                         "Vargroups of dimensions/multidimensions are not implemented!\n"
                         f"Either contact a developer or enter the data for {name} manually!"
@@ -703,10 +706,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TypeAlias
 
 """Union of all types accepted by ``PwscfInput``."""
-PwscfInputType: TypeAlias = str | bool | int | float | Sequence | Mapping
+type PwscfInputType = str | bool | int | float | Sequence | Mapping
 
 
 @dataclass(frozen=True) # We generally don't want any of these to be modified

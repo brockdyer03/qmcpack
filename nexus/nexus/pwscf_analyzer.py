@@ -1593,7 +1593,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
             axes = np.asarray(cell.vectors,dtype=float)
             specifier = input_data.atomic_positions.specifier
             if specifier in {'alat',''}:
-                scale = input_data.get_common_vars('scale')
+                scale = input_data.alat
                 positions = positions*scale
             elif specifier=='angstrom':
                 positions = positions*convert(1.0,'A','B')
