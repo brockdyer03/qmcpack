@@ -432,35 +432,38 @@ class NamelistBase:
                 # Gets all i's together into one set
                 dim_vals = {i[dim] for i in value}
                 if isinstance(dim_max, int):
-                    if max(dim_vals) > dim:
+                    if max(dim_vals) > dim_max:
                         valid = False
                         dim_msg += msg.format(
                             name  = name,
                             given = tuple(value.keys()),
-                            known = dim_max,
+                            known = shape[1],
                         ) + "\n"
                 elif dim_max in {"ntyp", "ntype"}:
                     if max(dim_vals) > phys_sys.n_species:
                         valid = False
+                        known = list(shape[1])
+                        known[dim] = phys_sys.n_species
                         dim_msg += msg.format(
                             name  = name,
                             given = tuple(value.keys()),
-                            known = (1, phys_sys.n_species),
+                            known = tuple(known),
                         ) + "\n"
-                elif shape[1] == "natx":
+                elif dim_max == "natx":
                     if max(dim_vals) > phys_sys.n_ions:
                         valid = False
+                        known = list(shape[1])
+                        known[dim] = phys_sys.n_ions
                         dim_msg += msg.format(
                             name  = name,
                             given = tuple(value.keys()),
-                            known = (1, phys_sys.n_ions),
+                            known = tuple(known),
                         ) + "\n"
                 else:
                     wmsg = (
                         f"Shape checking for shape `{dim_max}` "
                         f"required by param `{name}` has not been implemented!"
                     )
-                    dim_msg += wmsg + "\n"
                     LOGGER.debug(wmsg)
 
             msg = dim_msg
@@ -482,10 +485,10 @@ class NamelistBase:
         add_ver = tuple(map(int, added.split("."))) if added is not None else None
         rem_ver = tuple(map(int, removed.split("."))) if removed is not None else None
         msg = name + " was {cond} in version {ver}, but you are using version " + current
-        if rem_ver is not None and cur_ver > rem_ver:
+        if rem_ver is not None and cur_ver >= rem_ver:
             return False, msg.format(cond="removed", ver=removed)
         elif add_ver is not None and cur_ver < add_ver:
-            return False, msg.format(cond="added", ver=removed)
+            return False, msg.format(cond="added", ver=added)
         else:
             return True, ""
 

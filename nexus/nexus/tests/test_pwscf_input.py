@@ -31,8 +31,8 @@ from ..pwscf_input import (
     System,
     generate_pwscf_input,
 )
+from ..pwscf_input_defs import SystemDefinitions
 from ..structure import read_structure
-from ..testing import object_eq
 from . import TEST_DIR, NexusTestOrder, isolate_nexus_core, register_pseudo_files
 
 pytestmark = pytest.mark.order(NexusTestOrder.PWSCF_INPUT)
@@ -167,6 +167,187 @@ def assert_pwscf_input_equals(pwi1: PwscfInput, pwi2: PwscfInput) -> None:
         assert(type(pwi1_card) is type(pwi2_card))
         if not (pwi1_card is None and pwi2_card is None):
             assert_card_equals(pwi1_card, pwi2_card)
+
+
+def test_join_array_params():
+    ref = {
+        'starting_ns_eigenvalue': {
+            (1, 2, 1): "a",
+            (2, 2, 1): "b",
+            (3, 2, 1): "c",
+            (4, 2, 1): "d",
+            (5, 2, 1): "e",
+        },
+    }
+    params = {
+        'starting_ns_eigenvalue(1,2,1)' : "a",
+        'starting_ns_eigenvalue(2,2,1)' : "b",
+        'starting_ns_eigenvalue(3,2,1)' : "c",
+        'starting_ns_eigenvalue(4,2,1)' : "d",
+        'starting_ns_eigenvalue(5,2,1)' : "e",
+    }
+    normalized = System.join_array_params(params)
+    assert(normalized == ref)
+
+    ref = {
+        'celldm': {
+            1: "a",
+            2: "b",
+            4: "d",
+            5: "e",
+        },
+    }
+    params = {
+        "celldm(1)" : "a",
+        "celldm(2)" : "b",
+        "celldm(4)" : "d",
+        "celldm(5)" : "e",
+    }
+    normalized = System.join_array_params(params)
+    assert(normalized == ref)
+
+
+def test_check_param_shape():
+    celldm = {
+        1: "a",
+        2: "b",
+        4: "d",
+        5: "e",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "celldm",
+        value = celldm,
+        shape = SystemDefinitions.celldm.shape,
+        phys_sys = None,
+    )
+    assert(valid), msg
+
+    celldm = {
+        7: "f",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "celldm",
+        value = celldm,
+        shape = SystemDefinitions.celldm.shape,
+        phys_sys = None,
+    )
+    assert(not valid)
+    assert("celldm" in msg)
+    assert("7" in msg)
+    assert("(1, 6)" in msg)
+
+
+    struct_file = TEST_FILES['VO2_M1_afm.xsf']
+    phys_sys = generate_physical_system(structure=struct_file)
+    hub_u = {
+        1: "a",
+        2: "b",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "hubbard_u",
+        value = hub_u,
+        shape = SystemDefinitions.hubbard_u.shape,
+        phys_sys = phys_sys,
+    )
+    assert(valid), msg
+
+    hub_u = {
+        1: "a",
+        3: "c",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "hubbard_u",
+        value = hub_u,
+        shape = SystemDefinitions.hubbard_u.shape,
+        phys_sys = phys_sys,
+    )
+    assert(not valid)
+    assert("hubbard_u" in msg)
+    assert("3" in msg)
+    assert("(1, 2)" in msg)
+
+
+    hub_v = {
+        ( 1, 2, 1): "a",
+        ( 2, 2, 2): "b",
+        ( 6, 2, 3): "c",
+        (12, 2, 4): "d",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "hubbard_v",
+        value = hub_v,
+        shape = SystemDefinitions.hubbard_v.shape,
+        phys_sys = phys_sys,
+    )
+    assert(valid), msg
+
+    hub_v = {
+        (13, 2, 1): "a",
+    }
+    valid, msg = NamelistBase._check_param_shape(
+        name = "hubbard_v",
+        value = hub_v,
+        shape = SystemDefinitions.hubbard_v.shape,
+        phys_sys = phys_sys,
+    )
+    assert(not valid)
+    assert("hubbard_v" in msg)
+    assert("(13, 2, 1)" in msg)
+    assert("(12, '27*natx', 4)" in msg)
+
+
+def test_check_param_version():
+    valid, msg = NamelistBase._check_param_version(
+        name = "hubbard_u",
+        current = "7.0.0",
+        added = None,
+        removed = "7.1.0",
+    )
+    assert(valid), msg
+
+    valid, msg = NamelistBase._check_param_version(
+        name = "exx_maxstep",
+        current = "7.5.0",
+        added = "7.2.0",
+        removed = None,
+    )
+    assert(valid), msg
+
+
+    added = "7.1.0"
+    removed = "7.5.0"
+    current = "7.2.0"
+    valid, msg = NamelistBase._check_param_version(
+        name = "diago_ppcg_maxiter",
+        current = current,
+        added = added,
+        removed = removed,
+    )
+    assert(valid), msg
+
+    current = "7.0.0"
+    valid, msg = NamelistBase._check_param_version(
+        name = "diago_ppcg_maxiter",
+        current = current,
+        added = added,
+        removed = removed,
+    )
+    assert(not valid)
+    assert(current in msg)
+    assert("added" in msg)
+    assert(added in msg)
+
+    current = "7.6.0"
+    valid, msg = NamelistBase._check_param_version(
+        name = "diago_ppcg_maxiter",
+        current = current,
+        added = added,
+        removed = removed,
+    )
+    assert(not valid)
+    assert(current in msg)
+    assert("removed" in msg)
+    assert(removed in msg)
 
 
 @isolate_nexus_core
