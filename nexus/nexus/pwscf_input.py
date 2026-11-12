@@ -51,7 +51,6 @@ from numpy import pi
 from numpy.linalg import inv
 
 from .developer import FileFormatError, NexusError, NotAnElementError, obj, warn
-from .developer_tools import unset
 from .generic import nxs_deprecate
 from .periodic_table import Elements
 from .physical_system import PhysicalSystem
@@ -124,6 +123,45 @@ type HubbardInteraction = Literal["U", "ALPHA", "J0", "J", "B", "E2", "E3", "V"]
 
 LOGGER = logging.getLogger(__name__)
 
+
+def qmcpack_tiling_check(
+    structure: Structure
+) -> tuple[str | Literal[""], npt.NDArray[np.float64]]:
+    """Check that a tiled lattice matches the supercell lattice for a tiled structure.
+
+    See ``EinsplineSetBuilder::CheckLattice()`` in
+    ``qmcpack/src/QMCWaveFunctions/BsplineFactory/EinsplineSetBuilderCommon.cpp``
+    """
+    if structure.folded_structure is None:
+        return "", np.asarray(structure.axes, dtype=float)
+
+    matching_tol = 1e-06  # Roughly equal to 10 * std::numeric_limits<float>::epsilon();
+    fs = structure.folded_structure
+    tiled_axes = np.dot(structure.tmatrix, np.asarray(fs.axes, dtype=np.float64))
+    diff = 0.0
+    for i, j in product(range(structure.dim), range(structure.dim)):
+        max_abs = max(abs(tiled_axes[i, j]), abs(structure.axes[i, j]))
+        if max_abs > matching_tol:
+            diff = max(
+                diff,
+                abs(tiled_axes[i, j] - structure.axes[i, j]) / max_abs
+            )
+
+    if diff > matching_tol:
+        msg = (
+            "Supercell axes do not match tiled version of folded cell axes\n"
+            "You may have changed one set of axes (super/folded) and not the other\n"
+            "Folded cell axes:\n"
+            f"{fs.axes}\n"
+            "Supercell axes:\n"
+            f"{structure.axes}\n"
+            "Folded axes tiled:\n"
+            f"{tiled_axes}"
+        )
+        return msg, tiled_axes
+
+    return "", tiled_axes
+
 @cache
 def _with_accepted_types(
     dtype: type[str | bool | int | float]
@@ -144,6 +182,8 @@ def _with_accepted_types(
 def _get_array_params(deftype: NamelistDefType) -> frozenset[str]:
     return {i.name for i in deftype if i.shape is not None}
 
+def _get_namelist_names(deftype: NamelistDefType) -> tuple[str]:
+    return tuple(i.name for i in deftype)
 
 class NamelistBase:
     """Base class for instances of namelists."""
@@ -154,7 +194,8 @@ class NamelistBase:
     namelist_def: ClassVar[NamelistDefType]
     required: ClassVar[bool]
     params: dict[str, PwscfInputType]
-    array_params: frozenset[str]
+    array_params: ClassVar[frozenset[str]]
+    namelist_names: tuple[str]
 
     def __init__(
         self,
@@ -268,10 +309,7 @@ class NamelistBase:
             elif verbose:
                 warn(msg)
 
-        if name == "input_dft" and ("+" in value or value.lower().startswith("xc")):
-            # Only check simple input names, others introduce too much maintenance burden.
-            pass
-        elif def_allowed is not None and value not in def_allowed:
+        if def_allowed is not None and value not in def_allowed:
             msg = msg.format(attr="value", known=def_allowed, given=value)
             if strict:
                 raise ValueError(msg)
@@ -453,7 +491,14 @@ class NamelistBase:
 
     def write(self) -> str:
         lines = []
-        for key, value in self.params.items():
+        params = {
+            k: v for k, v in sorted(
+                self.params.items(),
+                key=lambda x: self.namelist_names.index(x[0])
+            )
+        }
+        for key, value in params.items():
+            key = self.namelist_def(key).input_name
             if isinstance(value, Mapping):
                 for idx, val in value.items():
                     if isinstance(val, str):
@@ -482,7 +527,7 @@ class NamelistBase:
         if len(lines) != 0:
             pad = max(len(i[0]) for i in lines)
             text += indent("".join(f"{i[0]:<{pad}} = {i[1]}\n" for i in lines), "    ")
-        text += "/"
+        text += "/\n"
         return text
 
     @classmethod
@@ -556,6 +601,9 @@ class NamelistBase:
     def incorporate_system(self, phys_sys: PhysicalSystem) -> None:
         pass
 
+    def clear(self) -> None:
+        self.params.clear()
+
     def update(
         self,
         *,
@@ -580,6 +628,15 @@ class NamelistBase:
                     strict   = strict,
                 )
             self.params[name.lower()] = value
+
+    def keys(self):
+        return self.params.keys()
+
+    def values(self):
+        return self.params.values()
+
+    def items(self):
+        return self.params.items()
 
     def __repr__(self) -> str:
         text = f"{self.name.upper()}(\n"
@@ -614,6 +671,7 @@ class Control(NamelistBase):
     namelist_def = ControlDefinitions
     required = True
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class System(NamelistBase):
@@ -623,18 +681,24 @@ class System(NamelistBase):
     namelist_def = SystemDefinitions
     required = True
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
-    def incorporate_system(self, phys_sys: PhysicalSystem) -> None:
-        if (name := "ibrav") not in self.params:
+    def incorporate_system(
+        self,
+        phys_sys: PhysicalSystem,
+        *,
+        overwrite: bool = False,
+    ) -> None:
+        if (name := "ibrav") not in self.params or overwrite:
             self.params[name] = 0
 
-        if (name := "nat") not in self.params:
+        if (name := "nat") not in self.params or overwrite:
             self.params[name] = phys_sys.n_ions
 
-        if (name := "ntyp") not in self.params:
+        if (name := "ntyp") not in self.params or overwrite:
             self.params[name] = phys_sys.n_species
 
-        if (name := "tot_charge") not in self.params:
+        if (name := "tot_charge") not in self.params or overwrite:
             self.params[name] = phys_sys.net_charge
 
 
@@ -645,6 +709,7 @@ class Electrons(NamelistBase):
     namelist_def = ElectronsDefinitions
     required = True
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class Ions(NamelistBase):
@@ -654,6 +719,7 @@ class Ions(NamelistBase):
     namelist_def = IonsDefinitions
     required = False
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class Cell(NamelistBase):
@@ -663,6 +729,7 @@ class Cell(NamelistBase):
     namelist_def = CellDefinitions
     required = False
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class Fcp(NamelistBase):
@@ -672,6 +739,7 @@ class Fcp(NamelistBase):
     namelist_def = FcpDefinitions
     required = False
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class Rism(NamelistBase):
@@ -681,6 +749,7 @@ class Rism(NamelistBase):
     namelist_def = RismDefinitions
     required = False
     array_params = _get_array_params(namelist_def)
+    namelist_names = _get_namelist_names(namelist_def)
 
 
 class CardBase(ABC):
@@ -730,6 +799,16 @@ class CardBase(ABC):
         msg = f"Can not create {type(self).__name__} card from a PhysicalSystem/Structure!"
         raise NotImplementedError(msg)
 
+    def update(self, **kwargs) -> None:
+        """Thin wrapper around ``__init__``.
+
+        Missing keywords are populated from the existing instance attributes.
+        """
+        for key in vars(self):
+            if key not in kwargs:
+                kwargs[key] = getattr(self, key, None)
+        self.__init__(**kwargs)
+
     def __repr__(self) -> str:
         dct = vars(self)
         align = max(map(len, dct.keys()))
@@ -752,7 +831,7 @@ class AtomicSpecies(CardBase):
 
     atoms: list[str]
     masses: dict[str, float]
-    pseudos: dict[str, str]
+    pseudos: dict[str, Path]
 
     def __init__(
         self,
@@ -760,7 +839,8 @@ class AtomicSpecies(CardBase):
         masses: dict[str, float] | None,
         pseudos: dict[str, str | Path],
         *,
-        disable_pseudo_check: bool = False, # Really only should be used when reading from input
+        elem_order: list[str] | None = None,
+        require_pseudos_exist: bool = True, # Really only should be disabled when reading from input
     ):
         if not all(Elements.is_element(e) for e in atoms):
             msg = "Not all atoms supplied are elements!"
@@ -772,12 +852,19 @@ class AtomicSpecies(CardBase):
                 _, elem = Elements.is_element(atom, return_element=True)
                 masses[atom] = elem.atomic_weight
 
-        if not disable_pseudo_check:
+        try:
             psps = PseudoSet.get_pseudos(
                 pseudos = pseudos,
                 system = atoms,
                 code = "pwscf",
             )
+        except FileNotFoundError:
+            if require_pseudos_exist:
+                raise
+        else:
+            if len(psps) == 0:
+                msg = "No pseudos provided!"
+                raise ValueError(msg)
             psps = {
                 pp_elem_label(fname, guard=True)[1]: fpath for fname, fpath in psps.items()
             }
@@ -790,9 +877,34 @@ class AtomicSpecies(CardBase):
             msg = "Atoms, masses, and pseudos must all have the same atoms!"
             raise ValueError(msg)
 
-        self.atoms = atoms
+        species = set(atoms)
+        if elem_order is not None:
+            if len(missing := set(elem_order) - species) > 0:
+                msg = (
+                    "`elem_order` is missing some atomic species!\n"
+                    f"Expected species: {", ".join(sorted(species))}"
+                    f"Missing species:  {", ".join(sorted(missing))}"
+                )
+                raise ValueError(msg)
+            elif len(elem_order) != len(species):
+                duplicates = [
+                    (i[0], next(i[1])) for i in groupby(elem_order, len) if i[0] > 1
+                ]
+                msg = (
+                    "Repeated elements in `elem_order` not allowed!\n"
+                    "Duplicates (count, name):\n"
+                    f"{indent("\n".join(map(str, duplicates)), "  ")}"
+                )
+                raise ValueError(msg)
+            ordered_species = list(elem_order)
+        else:
+            ordered_species = sorted(species, key=atoms.index)
+
+        self.atoms = ordered_species
         self.masses = dict(masses)
-        self.pseudos = {atom: Path(pseudo).name for atom, pseudo in pseudos.items()}
+        self.pseudos = {
+            atom: Path(pseudo).resolve() for atom, pseudo in pseudos.items()
+        }
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
@@ -805,27 +917,32 @@ class AtomicSpecies(CardBase):
             masses[atom] = float(mass.lower().replace("d", "e"))
             pseudos[atom] = pseudo
 
-        return cls(atoms, masses, pseudos, disable_pseudo_check=True)
+        return cls(atoms, masses, pseudos, require_pseudos_exist=False)
 
     def write(self) -> str:
         text = f"{self.name.upper()}\n"
         for at in self.atoms:
-            text += f"    {at:2} {self.masses[at]} {self.pseudos[at]}\n"
+            text += f"    {at:2} {self.masses[at]:6} {self.pseudos[at].name}\n"
 
         return text
 
     @classmethod
     def from_phys_sys(
         cls,
-        phys_sys: PhysicalSystem,
+        phys_sys: PhysicalSystem | Structure,
         /,
         pseudos: PseudoSet | dict[str, str] | list[str],
-        **kwargs,  # noqa: ARG003
+        *,
+        elem_order: list[str] | None = None,
     ) -> Self:
+        if isinstance(phys_sys, PhysicalSystem):
+            phys_sys = phys_sys.structure
+
         return cls(
-            atoms=phys_sys.structure.ordered_species(),
+            atoms=phys_sys.ordered_species(),
             masses=None,
             pseudos=pseudos,
+            elem_order=elem_order,
         )
 
 
@@ -844,13 +961,13 @@ class AtomicPositions(CardBase):
     specifier: AtomicPositionsSpecifier
     atoms: list[str]
     positions: npt.NDArray[np.float64]
-    force_multipliers: npt.NDArray[np.int64] | None
+    force_multipliers: npt.NDArray[np.bool_] | None
 
     def __init__(
         self,
         atoms: list[str] | Structure | PhysicalSystem,
         positions: npt.ArrayLike[np.floating] | None = None,
-        force_multipliers: npt.ArrayLike[np.floating] | None = None,
+        force_multipliers: npt.ArrayLike[np.bool_] | None = None,
         specifier: AtomicPositionsSpecifier | None = None,
     ):
         self.atoms = atoms
@@ -873,13 +990,26 @@ class AtomicPositions(CardBase):
             raise ValueError(msg)
 
         if force_multipliers is not None:
-            if len(force_multipliers) != len(self.atoms):
-                msg = "The force_multipliers array must be the same length as the number of atoms!"
-                raise ValueError(msg)
             force_multipliers = np.asarray(force_multipliers)
-            if force_multipliers.dtype != int or force_multipliers.dtype != bool:
-                msg = "force_multipliers must be an integer or mask array!"
-            force_multipliers = force_multipliers.astype(int)
+            if force_multipliers.shape != self.positions.shape:
+                msg = "The force_multipliers array must have the same dimension as the positions!"
+                raise ValueError(msg)
+            if not (force_multipliers.dtype == int or force_multipliers.dtype == bool):
+                msg = "`force_multipliers` must be an integer or boolean array!"
+                raise ValueError(msg)
+            if np.any((force_multipliers != 0) & (force_multipliers != 1)):
+                msg = (
+                    "All values in `force_multipliers` must be 0 or 1!\n"
+                    "The array is not 0 or 1 at these locations:\n"
+                )
+                nonbools = np.argwhere(np.invert(np.isin(force_multipliers, [0,1])))
+                for invalid in nonbools:
+                    msg += (
+                        f"  force_multipliers{invalid.tolist()} = "
+                        f"{force_multipliers[tuple(invalid)]}\n"
+                    )
+                raise ValueError(msg)
+            force_multipliers = force_multipliers.astype(bool)
 
         self.force_multipliers = force_multipliers
 
@@ -909,15 +1039,17 @@ class AtomicPositions(CardBase):
 
     def write(self) -> str:
         text = f"{self.name.upper()} ({self.specifier})\n"
-        for idx, (atom, pos) in enumerate(zip(self.atoms, self.positions, strict=True)):
-            fmt = ">16.10f"
-            text += f"    {atom:2}"
-            l = indent(dedent(f"{pos[0]:{fmt}} {pos[1]:{fmt}} {pos[2]:{fmt}}"), "    ")
-            text += f" {l}"
+        lines = ""
+        for idx, pos in enumerate(self.positions):
+            fmt = "16.10f"
+            lines += f"{pos[0]:{fmt}} {pos[1]:{fmt}} {pos[2]:{fmt}}"
             if self.force_multipliers is not None:
                 mult = self.force_multipliers[idx]
-                text += f" {mult[0]:d} {mult[1]:d} {mult[2]:d}"
-            text += "\n"
+                lines += f" {mult[0]:d} {mult[1]:d} {mult[2]:d}"
+            lines += "\n"
+        lines = indent(dedent(lines), "   ")
+        for atom, line in zip(self.atoms, lines.splitlines(), strict=True):
+            text += f"    {atom:<2} {line}\n"
 
         return text
 
@@ -951,7 +1083,7 @@ class AtomicPositions(CardBase):
             case "bohr":
                 pass
             case "angstrom":
-                pos *= convert(1., "A", "B")
+                pos *= convert(1.0, "A", "B")
             case "crystal":
                 pos = np.dot(pos, pwi.axes)
 
@@ -961,7 +1093,7 @@ class AtomicPositions(CardBase):
             case "bohr":
                 pass
             case "angstrom":
-                pos /= convert(1., "A", "B")
+                pos /= convert(1.0, "A", "B")
             case "crystal":
                 pos  = np.dot(pos, inv(pwi.axes))
 
@@ -969,7 +1101,12 @@ class AtomicPositions(CardBase):
         self.specifier = new_specifier
 
     @classmethod
-    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /, **kwargs) -> Self:  # noqa: ARG003
+    def from_phys_sys(
+        cls,
+        phys_sys: PhysicalSystem | Structure,
+        /,
+        old_force_multipliers: npt.NDArray[np.integer] | None = None,
+    ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             structure = phys_sys.structure
         else:
@@ -981,8 +1118,21 @@ class AtomicPositions(CardBase):
             raise NotAnElementError(msg)
 
         pos = structure.pos
-        force_multipliers = structure.frozen
         specifier = "bohr" if "b" in structure.units.lower() else "angstrom"
+
+        if structure.frozen is not None:
+            frozen = np.invert(np.asarray(structure.frozen, dtype=bool))
+        else:
+            frozen = np.ones(structure.pos.shape, dtype=bool)
+
+        if old_force_multipliers is not None:
+            force_multipliers = old_force_multipliers & frozen
+        else:
+            force_multipliers = np.ones(structure.pos.shape, dtype=bool) & frozen
+
+        if np.all(force_multipliers): # No need to store an all-True array
+            force_multipliers = None
+
         return cls(
             atoms=atoms,
             positions=pos,
@@ -1216,9 +1366,10 @@ class KPoints(CardBase):
         if self.specifier == "gamma":
             pass
         elif self.specifier == "automatic":
-            text += "    {:{f}} {:{f}} {:{f}}  {:{f}} {:{f}} {:{f}}\n".format(
+            line = "{:{f}} {:{f}} {:{f}}  {:{f}} {:{f}} {:{f}}\n".format(
                 *self.grid, *self.shift, f="2d"
             )
+            text += indent(line.lstrip(" "), "    ")
         else:
             text += f"  {self.nkpoints}\n"
             fmt = ">16.10f"
@@ -1286,20 +1437,46 @@ class KPoints(CardBase):
         self.specifier = new_specifier
 
     @classmethod
-    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /, **kwargs) -> Self:  # noqa: ARG003
+    def from_phys_sys(
+        cls,
+        phys_sys: PhysicalSystem | Structure,
+        /,
+        *,
+        no_gamma: bool = False,
+        no_assume: bool = True,
+    ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             structure = phys_sys.structure
         else:
             structure = phys_sys
 
-        kpts = structure.kpoints
-        kweights = structure.kweights
-        return cls(
-            specifier="tpiba",
-            nkpoints=len(kpts),
-            kpoints=kpts,
-            weights=kweights,
-        )
+        nkpoints = len(structure.kpoints)
+        if nkpoints > 0:
+            if structure.at_Gpoint() and not no_assume:
+                if no_gamma:
+                    return cls(
+                        specifier="automatic",
+                        grid=(1, 1, 1),
+                        shift=(0, 0, 0),
+                    )
+                else:
+                    return cls(specifier="gamma")
+            elif structure.at_Lpoint() and not no_assume:
+                return cls(
+                    specifier="automatic",
+                    grid=(1, 1, 1),
+                    shift=(1, 1, 1),
+                )
+            else:
+                return cls(
+                    specifier="tpiba",
+                    nkpoints=nkpoints,
+                    kpoints=structure.kpoints / (2 * pi),
+                    weights=structure.kweights.copy(),
+                )
+        else:
+            msg = "Structure has no k-points, can not create card!"
+            raise ValueError(msg)
 
 
 class CellParameters(CardBase):
@@ -1415,7 +1592,7 @@ class CellParameters(CardBase):
     #end def change_specifier
 
     @classmethod
-    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /, **kwargs) -> Self:  # noqa: ARG003
+    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             structure = phys_sys.structure
         else:
@@ -3323,7 +3500,7 @@ class PwscfInputParser:
                 msg = "Invalid match found!"
                 raise RuntimeError(msg)
 
-        warn(f"Unknown type for value '{val_str}', assuming `str`!")
+        LOGGER.debug(f"Unknown type for value '{val_str}', assuming `str`!")
         return val_str
 
 
@@ -3351,35 +3528,37 @@ class PwscfInput(SimulationInput):
 
     namelist_types: ClassVar = MappingProxyType(
         {
-            "control"   : Control,
-            "system"    : System,
-            "electrons" : Electrons,
-            "ions"      : Ions,
-            "cell"      : Cell,
-            "fcp"       : Fcp,
-            "rism"      : Rism,
+            "control":   Control,
+            "system":    System,
+            "electrons": Electrons,
+            "ions":      Ions,
+            "cell":      Cell,
+            "fcp":       Fcp,
+            "rism":      Rism,
         }
     )
     namelists: ClassVar[tuple[NamelistName]] = tuple(namelist_types.keys())
 
     card_types: ClassVar = MappingProxyType(
         {
-            "atomic_species"   : AtomicSpecies,
-            "atomic_positions" : AtomicPositions,
-            "k_points"         : KPoints,
-            "cell_parameters"  : CellParameters,
-            "occupations"      : Occupations,
-            "constraints"      : Constraints,
-            "atomic_forces"    : AtomicForces,
-            "hubbard"          : Hubbard,
+            "atomic_species":   AtomicSpecies,
+            "atomic_positions": AtomicPositions,
+            "k_points":         KPoints,
+            "cell_parameters":  CellParameters,
+            "occupations":      Occupations,
+            "constraints":      Constraints,
+            "atomic_forces":    AtomicForces,
+            "hubbard":          Hubbard,
         }
     )
     cards: ClassVar[tuple[CardName]] = tuple(card_types)
     ordered_elements: ClassVar = namelists + cards
-    # allowed_attrs: ClassVar = frozenset({*ordered_elements, "phys_sys"})
 
     creatable_from_phys_sys = frozenset(
         {"atomic_species", "atomic_positions", "k_points", "cell_parameters"}
+    )
+    nmlists_allowed_empty = frozenset(
+        {"electrons", "ions"}
     )
 
     @property
@@ -3392,6 +3571,8 @@ class PwscfInput(SimulationInput):
             "atomic_positions",
             "k_points",
         }
+        if any(not hasattr(self, r) for r in req):
+            return req
         if self.system.params.get("ibrav") == 0:
             req.add("cell_parameters")
         if self.system.params.get("occupations") == "from_input":
@@ -3411,8 +3592,8 @@ class PwscfInput(SimulationInput):
 
     def __init__(
         self,
-        *,
         filepath: PathLike | None = None,
+        *,
         check: bool = False,
         version: str | None = None,
         phys_sys: PhysicalSystem | None = None,
@@ -3426,7 +3607,7 @@ class PwscfInput(SimulationInput):
 
         if filepath is not None:
             filepath = Path(filepath).resolve(strict=True)
-            self.read_text(filepath.read_text())
+            self.read_text(filepath.read_text(), filepath=filepath)
 
         kwargs = {k.lower(): v for k, v in kwargs.items()}
         group_kwargs, leftover_kwargs = self._separate_group_kwargs(kwargs)
@@ -3453,9 +3634,14 @@ class PwscfInput(SimulationInput):
 
         if not self.has_required_elements():
             missing_elems = set(self.required_elements) - set(vars(self))
-            if  len(missing := missing_elems - PwscfInput.creatable_from_phys_sys) > 0:
+            if phys_sys is not None:
+                uncreatable = missing_elems - PwscfInput.creatable_from_phys_sys
+            else:
+                uncreatable = missing_elems
+            uncreatable -= PwscfInput.nmlists_allowed_empty
+            if len(uncreatable) > 0:
                 current = indent("\n".join(vars(self)), "  ")
-                missing = indent("\n".join(missing), "  ")
+                missing = indent("\n".join(uncreatable), "  ")
                 msg = (
                     "Not all required groups have been supplied or can be created!\n"
                     "Current groups:\n"
@@ -3465,11 +3651,14 @@ class PwscfInput(SimulationInput):
                 )
                 raise ValueError(msg)
 
-            for card_name in missing_elems:
-                card_type = PwscfInput.card_types[card_name]
+            for group_name in missing_elems:
+                if group_name in PwscfInput.nmlists_allowed_empty:
+                    setattr(self, group_name, PwscfInput.namelist_types[group_name]())
+                    continue
+                card_type = PwscfInput.card_types[group_name]
                 card = card_type.from_phys_sys(phys_sys, pseudos=pseudos)
                 self._process_group(
-                    group=card_name,
+                    group=group_name,
                     value=card,
                     check=check,
                     version=version,
@@ -3563,23 +3752,19 @@ class PwscfInput(SimulationInput):
             raise NexusError(msg)
 
     def has_required_elements(self) -> bool:
-        yes = all(hasattr(self, elem) for elem in self.required_elements)
-        yes &= (
-            self.system.params["ibrav"] != 0
-            or (
-                hasattr(self, "cell_parameters")
-                and self.cell_parameters is not None
-            )
-        )
-        return yes
+        return all(hasattr(self, elem) for elem in self.required_elements)
 
-    def read_text(self, contents: str, filepath = None) -> None:  # noqa: ARG002
-        self.__init__(**PwscfInput.parser.read_text(contents))
+    def read_text(self, contents: str, filepath: PathLike | None = None) -> None:
+        try:
+            self.__init__(**PwscfInput.parser.read_text(contents))
+        except Exception as exc:
+            exc.add_note(f"Error occurred with file '{filepath}'")
+            raise
 
     def write_text(self, filepath = None) -> str:  # noqa: ARG002
         sections = {
             s: v for s, v in vars(self).items()
-            if s in PwscfInput.ordered_elements and v is not None
+            if (s in PwscfInput.ordered_elements and v is not None)
         }
         sections = [
             i[1] for i in sorted(
@@ -3603,7 +3788,7 @@ class PwscfInput(SimulationInput):
     @property
     def axes(self) -> npt.NDArray[np.float64]:
         if self.system.ibrav == 0:
-            return self.alat * np.asarray(self.cell_parameters.vectors, dtype=float)
+            return self.alat * np.asarray(self.cell_parameters.axes, dtype=float)
         elif self.system.ibrav == 1:
             return self.alat * np.eye((3, 3), dtype=float)
         else:
@@ -3618,103 +3803,22 @@ class PwscfInput(SimulationInput):
         hubbard_result = hubbard_result.splitlines()[1:]
         self.hubbard = Hubbard.read(hubbard_result)
 
-    def incorporate_system(self,system,elem_order=None):
+    def incorporate_system(
+        self,
+        system: PhysicalSystem,
+        elem_order: list[str] | None = None,
+    ):
         system.check_folded_system()
-        system.change_units('B')
-        s  = system.structure
-        nc = system.net_charge
-
-        self.system.ibrav        = 0
-#        self.system['celldm(1)'] = 1.0e0
-        nions = system.n_ions
-        nspecies = system.n_species
-        self.system.nat          = nions
-        self.system.ntyp         = nspecies
-        self.system.tot_charge   = nc
-
-        if 'cell_parameters' not in self:
-            self.cell_parameters = self.element_types['cell_parameters']()
-        #end if
-        self.cell_parameters.specifier = 'bohr'
-        self.cell_parameters.vectors   = s.axes.copy()
-
-        self.k_points.clear()
-        nkpoints = len(s.kpoints)
-        if nkpoints>0:
-            if s.at_Gpoint():
-                self.k_points.specifier = 'gamma'
-            elif s.at_Lpoint():
-                self.k_points.update(
-                    specifier = 'automatic',
-                    grid  = (1,1,1),
-                    shift = (1,1,1)
-                    )
-            else:
-                kpoints = s.kpoints/(2*pi)
-                self.k_points.specifier = 'tpiba'
-                self.k_points.nkpoints  = nkpoints
-                self.k_points.kpoints   = kpoints
-                self.k_points.weights   = s.kweights.copy()
-                self.k_points.change_specifier('crystal',self) #added to make debugging easier
-            #end if
-        #end if
-
-        if 'masses' not in self.atomic_species:
-            self.atomic_species.masses = obj()
-        #end if
-        for name in system.ion_labels:
-            _, element = Elements.is_element(name, return_element=True)
-            self.atomic_species.masses[name] = element.atomic_weight
-        #end for
-        if elem_order is None:
-            self.atomic_species.atoms = sorted(system.ion_labels)
-        else:
-            if set(elem_order)!=set(system.ion_labels):
-                msg = (
-                    'elem_order is missing some atomic species\n'
-                    f'atomic species present: {sorted(system.ion_labels)}\n'
-                    f'elem_order: {elem_order}'
-                    )
-                raise ValueError(msg)
-            elif len(elem_order)!=system.n_ions:
-                msg = (
-                    'elem_order has repeated elements\n'
-                    f'elem_order: {elem_order}'
-                    )
-                raise ValueError(msg)
-            #end if
-            self.atomic_species.atoms = list(elem_order)
-        #end if
-
-        # set pseudopotentials for renamed atoms (e.g. Cu3 is same as Cu)
-        pp = self.atomic_species.pseudos
-        for atom in self.atomic_species.atoms:
-            if atom not in pp:
-                iselem,element = Elements.is_element(atom,return_element=True)
-                symbol = element.symbol
-                if iselem and symbol in pp:
-                    pp[atom] = str(pp[symbol])
-                #end if
-            #end if
-        #end for
-
-        self.atomic_positions.specifier = 'bohr'
-        self.atomic_positions.positions = s.pos.copy()
-        self.atomic_positions.atoms     = list(s.elem)
-        if s.frozen is not None:
-            frozen = s.frozen
-            if 'relax_directions' in self.atomic_positions:
-                relax_directions = self.atomic_positions.relax_directions
-            else:
-                relax_directions = np.ones(s.pos.shape,dtype=int)
-            #end if
-            for i in range(len(s.pos)):
-                relax_directions[i,0] = int(not frozen[i,0] and relax_directions[i,0])
-                relax_directions[i,1] = int(not frozen[i,1] and relax_directions[i,1])
-                relax_directions[i,2] = int(not frozen[i,2] and relax_directions[i,2])
-            #end for
-            self.atomic_positions.relax_directions = relax_directions
-        #end if
+        system.change_units("B")
+        self.system.incorporate_system(system, overwrite=True)
+        self.cell_parameters = CellParameters.from_phys_sys(system)
+        self.k_points = KPoints.from_phys_sys(system, no_gamma=False, no_assume=False)
+        self.atomic_species = AtomicSpecies.from_phys_sys(
+            system, pseudos=self.atomic_species.pseudos, elem_order=elem_order,
+        )
+        self.atomic_positions = AtomicPositions.from_phys_sys(
+            system, old_force_multipliers=self.atomic_positions.force_multipliers
+        )
 
     def return_system(
         self,
@@ -3729,7 +3833,7 @@ class PwscfInput(SimulationInput):
         scale = self.alat
         axes = self.axes
 
-        elem = list(self.atomic_positions.atoms)
+        elem = self.atomic_positions.atoms
         ap = self.atomic_positions.change_specifier("bohr", self, in_place=False)
         pos = ap.positions
 
@@ -3744,9 +3848,9 @@ class PwscfInput(SimulationInput):
             pos     = pos,
             center  = center,
             kpoints = kpoints,
-            units   = 'B',
-            rescale = False
-            )
+            units   = "B",
+            rescale = False,
+        )
         structure.zero_corner()
         structure.recenter()
 
@@ -3760,7 +3864,7 @@ class PwscfInput(SimulationInput):
                 msg = (
                     f"Valence charge for atom `{atom}` has not been defined!\n"
                     "Please provide the valence charge as an argument to return_system()"
-                    )
+                )
                 raise ValueError(msg)
 
             ion_charge += atoms.count(atom) * valency[atom]
@@ -3797,26 +3901,6 @@ class PwscfInput(SimulationInput):
 
 
 def generate_pwscf_input(
-    selector: Literal["generic"] = "generic",
-    **kwargs: PwscfInputType | CardBase | NamelistBase,
-) -> PwscfInput:
-    if selector.lower() in {"vc-relax", "scf", "nscf", "relax", "generic"}:
-        warn(
-            "Passing `input_type` or `selector` no longer affects input generation! "
-            "Set `calculation` instead of `input_type` or `selector`.",
-            warn_type="deprecate",
-        )
-        if selector.lower() in {"vc-relax", "scf", "nscf", "relax"}:
-            kwargs["calculation"] = selector.lower()
-            if kwargs["calculation"] == "scf":
-                kwargs["defaults"] = LEGACY_GENERATE_DEFAULTS["oldscf"]
-            elif kwargs["calculation"] == "relax":
-                kwargs["defaults"] = LEGACY_GENERATE_DEFAULTS["oldrelax"]
-
-    return generate_any_pwscf_input(**kwargs)
-
-
-def generate_any_pwscf_input(
     *,
     system: PhysicalSystem | None = None,
     pseudos: PseudoSet | Sequence[str] = (),
@@ -3846,12 +3930,44 @@ def generate_any_pwscf_input(
     constraints_card:      Constraints     | None = None,
     occupations_card:      Occupations     | None = None,
     hubbard_card:          Hubbard         | None = None,
-    at_pos_specifier: AtomicPositionsSpecifier | None = None,
-    kpts_specifier: KPointsSpecifier | None = None,
-    cell_params_specifier: CellParametersSpecifier | None = None,
-    hubbard_specifier: HubbardSpecifier | None = None,
-    **kwargs,
+    at_pos_specifier:       AtomicPositionsSpecifier | None = None,
+    kpts_specifier:         KPointsSpecifier         | None = None,
+    cell_params_specifier:  CellParametersSpecifier  | None = None,
+    hubbard_specifier:      HubbardSpecifier         | None = None,
+    **kwargs: PwscfInputType,
 ) -> PwscfInput:
+    if "input_type" in kwargs or "selector" in kwargs:
+        input_type = kwargs["selector"] if "selector" in kwargs else kwargs["input_type"]
+        if input_type == "generic":
+            warn(
+                "Passing `input_type`/`selector` is deprecated, please remove from your script!",
+                warn_type="deprecate",
+            )
+        else:
+            old_selectors = {
+                "scf": "oldscf",
+                "relax": "oldrelax",
+                "nscf": "oldscf",
+                "vc-relax": "oldscf",
+            }
+            msg = "Passing `input_type`/`selector` is deprecated!\n"
+            msg += _legacy_default_help(
+                old_selectors.get(input_type),
+                kwargs=kwargs,
+                is_nscf=input_type == "nscf",
+                is_vc_relax=input_type == "vc-relax",
+            )
+            raise ValueError(msg)
+    elif defaults in {"oldscf", "oldrelax"}:
+        msg = f"Passing `{defaults=}` is deprecated!\n"
+        msg += _legacy_default_help(
+            defaults,
+            kwargs=kwargs,
+        )
+        raise ValueError(msg)
+    elif defaults == "standard":
+        warn(f"Passing `{defaults=}` is deprecated and does nothing!")
+        defaults = None
 
     if "ecut" in kwargs:
         warn(
@@ -3870,33 +3986,18 @@ def generate_any_pwscf_input(
 
     # Assign default values
     if defaults is not None:
-        if isinstance(defaults, str):
-            warn(
-                "Pre-set defaults are deprecated and will be removed in the future!",
-                warn_type="deprecate",
-            )
-            if defaults == "standard":
-                pass
-            elif defaults not in LEGACY_GENERATE_DEFAULTS:
-                msg = (
-                    f"Invalid default set requested: {defaults}\n"
-                    f"Valid options are {sorted(LEGACY_GENERATE_DEFAULTS.keys())}"
-                    )
-                raise ValueError(msg)
-            else:
-                defaults = LEGACY_GENERATE_DEFAULTS[defaults]
-        elif not isinstance(defaults, Mapping):
+        if not isinstance(defaults, Mapping):
             msg = "Defaults must be a dict mapping keywords to values!"
             raise TypeError(msg)
-        if defaults != "standard":
-            for name, default in defaults.items():
-                if name in kwargs:
-                    continue
 
-                if inspect.isclass(default) or inspect.isfunction(default):
-                    kwargs[name] = default()
-                else:
-                    kwargs[name] = default
+        for name, default in defaults.items():
+            if name in kwargs:
+                continue
+
+            if inspect.isclass(default) or inspect.isfunction(default):
+                kwargs[name] = default()
+            else:
+                kwargs[name] = default
 
     if ksymm_run and kwargs.get("calculation", "scf") != "scf":
         msg = "Input parameter 'calculation' must be set to 'scf' when ksymm_run is requested"
@@ -3936,6 +4037,8 @@ def generate_any_pwscf_input(
             msg = msg.format("atoms")
             raise ValueError(msg)
 
+        atoms = list(atoms)
+
         if (positions := kwargs.pop("positions", None)) is not None:
             pos = positions
         else:
@@ -3951,29 +4054,11 @@ def generate_any_pwscf_input(
             msg = msg.format("at_pos_specifier")
             raise ValueError(msg)
 
-        species = set(atoms)
-        if (elem_order := kwargs.pop("elem_order", None)) is not None:
-            if len(missing := set(elem_order) - species) > 0:
-                msg = (
-                    "`elem_order` is missing some atomic species!\n"
-                    f"Missing species: {",".join(missing)}"
-                )
-                raise ValueError(msg)
-            elif len(elem_order) != len(species):
-                duplicates = [(i[0], next(i[1])) for i in groupby(elem_order, len) if i[0] > 1]
-                msg = (
-                    "Repeated elements in `elem_order` not allowed!\n"
-                    f"Duplicates (count, name): {", ".join(map(str, duplicates))}"
-                    )
-                raise ValueError(msg)
-            ordered_species = list(elem_order)
-        else:
-            ordered_species = sorted(species, key=atoms.index)
-
         atomic_species_card = AtomicSpecies(
-            atoms=ordered_species,
+            atoms=sorted(set(atoms), key=atoms.index), # Remove dupes, retain ordering
             masses=kwargs.pop("mass") if "mass" in kwargs else kwargs.pop("masses", None),
             pseudos=pseudos,
+            elem_order=kwargs.pop("elem_order", None),
         )
         atomic_positions_card = AtomicPositions(
             atoms=atoms,
@@ -3985,54 +4070,29 @@ def generate_any_pwscf_input(
         system.check_folded_system()
         system.change_units("B")
         structure = system.structure
-        # Setting the 'lattice' (cell axes) requires some delicate care
-        #   QMCPACK will fail if this is even 1e-10 off of what is in
-        #   the wavefunction hdf5 file from QE
-        if structure.folded_structure is not None:
-            fs = structure.folded_structure
-            axes = np.asarray(fs.axes, dtype=float)
-            axes = np.dot(structure.tmatrix, axes)
-            if not np.allclose(axes, structure.axes, rtol=0, atol=1e-10):
-                with np.printoptions(precision=12, floatmode="fixed"):
-                    msg = (
-                        "Supercell axes do not match tiled version of folded cell axes\n"
-                        "You may have changed one set of axes (super/folded) and not the other\n"
-                        "Folded cell axes:\n"
-                        f"{fs.axes}\n"
-                        "Supercell axes:\n"
-                        f"{structure.axes}\n"
-                        "Folded axes tiled:\n"
-                        f"{axes}"
-                    )
-                    raise ValueError(msg)
-        else:
-            axes = np.asarray(structure.axes, dtype=float)
+        msg, axes = qmcpack_tiling_check(structure)
+        if len(msg) > 0:
+            with np.printoptions(precision=12, floatmode="fixed"):
+                raise ValueError(msg)
 
         structure.adjust_axes(axes)
+
+        if kwargs.get("ibrav") != 0 and cell_parameters_card is None:
+            LOGGER.debug(
+                "Setting ibrav to 0 when generating cell parameters from system."
+            )
+            kwargs["ibrav"] = 0
+
         if kwargs.pop("use_folded", True):
             system = system.get_smallest()
 
-        if (elem_order := kwargs.pop("elem_order", None)) is not None:
-            species = system.ion_labels
-            if len(missing := set(elem_order) - species) > 0:
-                msg = (
-                    "`elem_order` is missing some atomic species!\n"
-                    f"Missing species: {",".join(missing)}"
-                )
-                raise ValueError(msg)
-            elif len(elem_order) != len(species):
-                duplicates = [(i[0], next(i[1])) for i in groupby(elem_order, len) if i[0] > 1]
-                msg = (
-                    "Repeated elements in `elem_order` not allowed!\n"
-                    f"Duplicates (count, name): {", ".join(map(str, duplicates))}"
-                    )
-                raise ValueError(msg)
-            ordered_species = list(elem_order)
-            atomic_species_card = AtomicSpecies(
-                atoms=ordered_species,
-                masses=None,
-                pseudos=pseudos,
-            )
+        atomic_species_card = AtomicSpecies.from_phys_sys(
+            system,
+            pseudos=pseudos,
+            elem_order=kwargs.pop("elem_order", None),
+        )
+        atomic_positions_card = AtomicPositions.from_phys_sys(system)
+        cell_parameters_card = CellParameters.from_phys_sys(system)
 
     totmag_sys = kwargs.pop("totmag_sys", False)
     if totmag_sys:
@@ -4108,14 +4168,20 @@ def generate_any_pwscf_input(
         #   1) No PhysicalSystem, no kgrid, none/zero kshift
         #   2) kgrid produces 1 kpoint, none/zero kshift
         # Both are overridden if `nogamma=True`
-        no_kpt_info = kgrid is None and system is None
+        no_kpt_info = kgrid is None
         auto = kgrid is not None and kshift is not None
 
-        zero_shift = kshift is None or tuple(kshift) == (0, 0, 0)
+        zero_shift = kshift is not None and tuple(kshift) == (0, 0, 0)
         single_kpoint = kgrid is not None and tuple(kgrid) == (1, 1, 1)
 
         at_gamma = zero_shift and (single_kpoint or no_kpt_info)
 
+        if system is not None and len(system.structure.kpoints) > 0:
+            k_points_card = KPoints.from_phys_sys(
+                system,
+                no_gamma=nogamma,
+                no_assume=False, # Retained for legacy compatibility
+            )
         if at_gamma and not nogamma:
             k_points_card = KPoints(specifier="gamma")
         elif auto:
@@ -4234,6 +4300,13 @@ def generate_any_pwscf_input(
             in_place=True,
         )
 
+    if kpts_specifier is not None:
+        k_points_card.change_specifier(
+            kpts_specifier,
+            pwscf_input,
+            in_place=True,
+        )
+
     return pwscf_input
 
 
@@ -4261,20 +4334,37 @@ def _get_card_specifier(
     return None
 
 
-@nxs_deprecate(since="2.4.9", replacement="generate_pwscf_input")
-def generate_scf_input(**kwargs) -> PwscfInput:
-    return generate_pwscf_input(defaults="oldscf", **kwargs)
-@nxs_deprecate(since="2.4.9", replacement="generate_pwscf_input")
-def generate_nscf_input(**kwargs) -> PwscfInput:
-    return generate_pwscf_input(calculation="nscf", defaults="oldscf", **kwargs)
-@nxs_deprecate(since="2.4.9", replacement="generate_pwscf_input")
-def generate_relax_input(**kwargs):
-    return generate_pwscf_input(defaults="oldrelax", **kwargs)
-@nxs_deprecate(since="2.4.9", replacement="generate_pwscf_input")
-def generate_vcrelax_input(**kwargs) -> PwscfInput:
-    return generate_pwscf_input(calculation="vc-relax", defaults="oldscf", **kwargs)
+def _legacy_default_help(
+    default_set: Literal["oldscf", "oldrelax"],
+    kwargs: Mapping,
+    *,
+    is_nscf: bool = False,
+    is_vc_relax: bool = False
+) -> str:
+    legacy_defaults = _LEGACY_GENERATE_DEFAULTS[default_set]
+    missing = set(legacy_defaults.keys()) - set(kwargs.keys())
+    if len(missing) == 0:
+        return ""
 
-LEGACY_GENERATE_DEFAULTS = {
+    msg = (
+        "The values you must supply to restore the legacy behavior are given here.\n"
+        "Additional processing behavior of the deprecated generator is not guaranteed\n"
+        "to be restored, so please check your input files before and after updating!\n"
+    )
+    fmt = max(map(len, missing))
+    for key, value in legacy_defaults.items():
+        if key not in missing:
+            continue
+        if key == "calculation":
+            if is_nscf:
+                value = "nscf"
+            elif is_vc_relax:
+                value = "vc-relax"
+        msg += f"    {key:<{fmt}} = {value!r},\n"
+    return msg
+
+
+_LEGACY_GENERATE_DEFAULTS = {
     "oldscf": {
         "calculation":      'scf',
         "ecutwfc":          200.,
@@ -4282,7 +4372,6 @@ LEGACY_GENERATE_DEFAULTS = {
         "smearing":         'fermi-dirac',
         "degauss":          0.0001,
         "nosym":            False,
-        "wf_collect":       True,
         "restart_mode":     'from_scratch',
         "tstress":          True,
         "tprnfor":          True,
@@ -4305,7 +4394,6 @@ LEGACY_GENERATE_DEFAULTS = {
         "smearing":          'fermi-dirac',
         "degauss":           0.0001,
         "nosym":             True,
-        "wf_collect":        False,
         "restart_mode":      'from_scratch',
         "disk_io":           'low',
         "verbosity":         'high',
@@ -4324,3 +4412,37 @@ LEGACY_GENERATE_DEFAULTS = {
         "use_folded":        False,
     },
 }
+
+_DEPRECATED_FUNCTIONS = {
+    "generate_scf_input",
+    "generate_nscf_input",
+    "generate_relax_input",
+    "generate_vcrelax_input",
+}
+
+_LEGACY_CLASS_ALIASES = {
+    "atomic_forces": AtomicForces,
+    "atomic_positions": AtomicPositions,
+    "atomic_species": AtomicSpecies,
+    "cell": Cell,
+    "cell_parameters": CellParameters,
+    "constraints": Constraints,
+    "control": Control,
+    "electrons": Electrons,
+    "fcp": Fcp,
+    "hubbard": Hubbard,
+    "ions": Ions,
+    "k_points": KPoints,
+    "occupations": Occupations,
+    "rism": Rism,
+    "system": System,
+}
+
+def __getattr__(name: str):
+    if name in _DEPRECATED_FUNCTIONS:
+        msg = "This function has been removed! Use `generate_pwscf_input` instead!"
+        raise AttributeError(msg)
+    elif name in _LEGACY_CLASS_ALIASES:
+        return _LEGACY_CLASS_ALIASES[name]
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

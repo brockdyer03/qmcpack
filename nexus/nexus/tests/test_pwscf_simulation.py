@@ -9,7 +9,7 @@ from ..nexus_base import nexus_config
 from ..physical_system import generate_physical_system
 from ..pwscf import Pwscf, generate_pwscf
 from ..testing import clear_all_sims, failed, object_eq, value_eq
-from . import NexusTestOrder, create_pseudo_files, isolate_nexus_core
+from . import NexusTestOrder, create_pseudo_files, isolate_nexus_core, register_pseudo_files
 
 pytestmark = pytest.mark.order(NexusTestOrder.PWSCF_SIMULATION)
 
@@ -65,9 +65,11 @@ def get_pwscf_sim(type='scf'):
 
 
 def test_minimal_init():
+    register_pseudo_files(["C.BFD.upf"])
     sim = generate_pwscf(
         job    = job(machine='ws1',cores=1),
         system = get_system(),
+        pseudos= ["C.BFD.upf"],
         )
 
     assert(isinstance(sim,Pwscf))

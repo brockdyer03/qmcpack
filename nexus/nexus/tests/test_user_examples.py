@@ -16,6 +16,7 @@ from ..qmcpack_input import QmcpackInput
 from ..rmg_input import RmgInput
 from ..testing import object_diff, text_diff
 from . import TEST_DIR, NexusTestOrder
+from .test_pwscf_input import assert_pwscf_input_equals
 
 pytestmark = pytest.mark.order(NexusTestOrder.USER_EXAMPLES)
 
@@ -140,9 +141,19 @@ def check_generated_files(
         diff, dgen, dref = text_diff(ref_input, gen_input, full=True)
     else:
         input_class = input_classes[code]
-        ref_input = input_class(str(ref_filepath))
-        gen_input = input_class(str(gen_filepath))
-        diff, dgen, dref = object_diff(gen_input, ref_input, full=True)
+        if input_class is PwscfInput:
+            ref_input = input_class(filepath=str(ref_filepath))
+            gen_input = input_class(filepath=str(gen_filepath))
+            try:
+                assert_pwscf_input_equals(ref_input, gen_input)
+            except AssertionError as err:
+                err.add_note(f"Reference: {ref_filepath}\nGenerated: {gen_filepath}")
+                raise
+            diff = False
+        else:
+            ref_input = input_class(str(ref_filepath))
+            gen_input = input_class(str(gen_filepath))
+            diff, dgen, dref = object_diff(gen_input, ref_input, full=True)
 
     if diff:
         # assume failure

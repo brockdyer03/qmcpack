@@ -33,58 +33,6 @@ from .pwscf_analyzer import PwscfAnalyzer
 from .pwscf_input import PwscfInput, generate_pwscf_input
 from .simulation import DynamicProcess, Simulation
 
-unique_vdw_functionals = (
-    'optb86b-vdw',
-    'vdw-df3', # optB88+vdW
-    'vdw-df',
-    'vdw-df2',
-    'rev-vdw-df2',
-    'vdw-df-c09',
-    'vdw-df2-c09',
-    'rvv10',
-    )
-repeat_vdw_functionals = (
-    'vdw-df4', # 'optB86b-vdW'
-    )
-unique_functionals = (
-    'revpbe',
-    'pw86pbe',
-    'b86bpbe',
-    'pbe0',
-    'hse',
-    'gaup',
-    'pbesol',
-    'pbeq2d',
-    'optbk88',
-    'optb86b',
-    'pbe',
-    'wc',
-    'b3lyp',
-    'pbc',
-    'bp',
-    'pw91',
-    'hcth',
-    'olyp',
-    'tpss',
-    'oep',
-    'hf',
-    'blyp',
-    'lda',
-    'sogga',
-    'm06l',
-    'ev93',
-    *unique_vdw_functionals
-    )
-repeat_functionals = (
-    'q2d', # pbeq2d
-    'pz', # lda
-    *repeat_vdw_functionals
-    )
-
-vdw_functionals     = frozenset(unique_vdw_functionals+repeat_vdw_functionals)
-allowed_functionals = frozenset(unique_functionals+repeat_functionals)
-
-
 
 class Pwscf(Simulation):
     input_type = PwscfInput
@@ -93,7 +41,7 @@ class Pwscf(Simulation):
     application = 'pw.x'
     application_properties = frozenset({'serial','mpi'})
     application_results    = frozenset({'charge_density','orbitals','structure','restart'})
-
+    input: PwscfInput
     supports_restarts = True # supports restartable, but not force restart yet
 
     # dynamic workflow support
@@ -129,11 +77,6 @@ class Pwscf(Simulation):
         if not os.path.exists(outdir):
             os.makedirs(outdir)
         #end if
-        if 'input_dft' in self.input.system:
-            functional = self.input.system.input_dft.lower()
-            if '+' not in functional and functional not in allowed_functionals:
-                self.warn(f'functional "{functional}" is unknown to pwscf')
-            #end if
     #end def write_prep
 
 
@@ -191,8 +134,8 @@ class Pwscf(Simulation):
             struct  = structs[len(structs)-1]
             pos   = struct.positions
             atoms = struct.atoms
-            if 'celldm(1)' in self.input.system:
-                scale = self.input.system['celldm(1)']
+            if 'celldm' in self.input.system:
+                scale = self.input.system.celldm[1]
             else:
                 scale = 1.0
             #end if
@@ -461,8 +404,8 @@ class Pwscf(Simulation):
             struct  = deepcopy(structs[len(structs)-1])
             pos     = struct.positions
             atoms   = struct.atoms
-            if 'celldm(1)' in self.input.system:
-                scale = self.input.system['celldm(1)']
+            if 'celldm' in self.input.system:
+                scale = self.input.system.celldm[1]
             else:
                 scale = 1.0
             pos = scale*np.array(pos)
@@ -545,8 +488,7 @@ def generate_pwscf(**kwargs):
     sim_args,inp_args = Pwscf.separate_inputs(kwargs)
 
     if 'input' not in sim_args:
-        input_type = inp_args.pop('input_type',None)
-        sim_args.input = generate_pwscf_input(input_type,**inp_args)
+        sim_args.input = generate_pwscf_input(**inp_args)
     #end if
     pwscf = Pwscf(**sim_args)
 

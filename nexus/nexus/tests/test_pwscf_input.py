@@ -81,7 +81,6 @@ for file in TEST_FILES.values():
     assert(file.exists()), f"Test file not found! {file}"
 
 def assert_namelist_equals[T: NamelistBase](nml1: T, nml2: T) -> None:
-    __tracebackhide__ = True
     assert(type(nml1) is type(nml2))
     assert(nml1.params.keys() == nml2.params.keys())
     for key, value_1 in nml1.params.items():
@@ -93,7 +92,6 @@ def assert_namelist_equals[T: NamelistBase](nml1: T, nml2: T) -> None:
             assert(value_1 == value_2)
 
 def assert_card_equals[T: CardBase](card1: T, card2: T) -> None:
-    __tracebackhide__ = True
     assert(type(card1) is type(card2))
     if isinstance(card1, AtomicSpecies) and isinstance(card2, AtomicSpecies):
         assert(card1.atoms == card2.atoms)
@@ -152,7 +150,6 @@ def assert_card_equals[T: CardBase](card1: T, card2: T) -> None:
         assert(con1 == con2)
 
 def assert_pwscf_input_equals(pwi1: PwscfInput, pwi2: PwscfInput) -> None:
-    __tracebackhide__ = True
     for nml in PwscfInput.namelists:
         assert(hasattr(pwi1, nml))
         assert(hasattr(pwi2, nml))
@@ -340,11 +337,11 @@ def test_input(tmp_path):
         positions        = np.array([
             [4.50,4.50,4.09],
             [4.50,4.50,4.91],
-            ]),
+        ]),
         force_multipliers = np.array([
             [0,0,1],
             [0,0,1],
-            ]),
+        ], dtype=bool),
     )
     k_points = KPoints(specifier = 'gamma')
     pwscf_input = PwscfInput(
@@ -481,7 +478,7 @@ def test_input(tmp_path):
 
     # test read
     for input_file,pw in compositions.items():
-        pwr = PwscfInput(filepath=TEST_FILES[input_file])
+        pwr = PwscfInput(TEST_FILES[input_file])
         pwc = deepcopy(pw)
         assert_pwscf_input_equals(pwc, pwr)
     #end for
@@ -491,8 +488,8 @@ def test_input(tmp_path):
     for input_file,pw in compositions.items():
         write_path = tmp_path / ('composed_'+input_file)
         pw.write(write_path)
-        pw2 = PwscfInput(filepath=write_path)
-        pwr = PwscfInput(filepath=TEST_FILES[input_file])
+        pw2 = PwscfInput(write_path)
+        pwr = PwscfInput(TEST_FILES[input_file])
         assert_pwscf_input_equals(pw2,pwr)
     #end for
 
@@ -504,9 +501,9 @@ def test_input(tmp_path):
             continue
         read_path = file_path
         write_path = tmp_path / input_file
-        pw = PwscfInput(filepath=read_path)
+        pw = PwscfInput(read_path)
         pw.write(write_path)
-        pw2 = PwscfInput(filepath=write_path)
+        pw2 = PwscfInput(write_path)
         assert_pwscf_input_equals(pw,pw2)
         reads[input_file] = pw
     #end for
@@ -559,8 +556,8 @@ def test_input(tmp_path):
         kshift           = (0,0,0),
         # added for reverse compatibility
         celldm           = {1:1.0},
-        cell_option      = 'alat',
-        positions_option = 'alat',
+        cell_params_specifier = 'alat',
+        at_pos_specifier = 'alat',
         # Previous version sorted alphabetically, but we sort by order in structure.
         # This causes the order of the labels in ATOMIC_SPECIES to be different
         # The Hubbard_U and starting_magnetization indices are correct in both
@@ -580,8 +577,8 @@ def test_input(tmp_path):
     generations[infile] = pw
 
     pw.write(write_path)
-    pw2 = PwscfInput(filepath=read_path)
-    pw3 = PwscfInput(filepath=write_path)
+    pw2 = PwscfInput(read_path)
+    pw3 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,pw3)
 
     # based on sample_inputs/Fe_start_ns_eig.in
@@ -621,7 +618,7 @@ def test_input(tmp_path):
         elem            = ['Fe','Fe'],
         pos             = [[2.070000000, 0.000000000, 0.000000000],
                            [0.000000000, 0.000000000, 0.000000000]],
-        pos_specifier   = 'angstrom',
+        at_pos_specifier   = 'angstrom',
         kgrid           = np.array((1,1,1)),
         kshift          = np.array((1,1,1)),
         **{
@@ -641,7 +638,7 @@ def test_input(tmp_path):
     pw2 = compositions[infile]
     assert_pwscf_input_equals(pw,pw2)
     pw.write(write_path)
-    pw3 = PwscfInput(filepath=write_path)
+    pw3 = PwscfInput(write_path)
     pw4 = reads[infile]
     assert_pwscf_input_equals(pw3,pw4)
 
@@ -680,7 +677,7 @@ def test_input(tmp_path):
         elem            = ['Fe','Fe'],
         pos             = [[2.070000000, 0.000000000, 0.000000000],
                            [0.000000000, 0.000000000, 0.000000000]],
-        pos_specifier   = 'angstrom',
+        at_pos_specifier   = 'angstrom',
         kgrid           = np.array((1,1,1)),
         kshift          = np.array((1,1,1)),
         starting_ns_eigenvalue = {(1,2,1) : 0.0,
@@ -702,7 +699,7 @@ def test_input(tmp_path):
     pw3 = reads[infile]
     assert_pwscf_input_equals(pwg,pw3)
     pw.write(write_path)
-    pw4 = PwscfInput(filepath=write_path)
+    pw4 = PwscfInput(write_path)
     assert_pwscf_input_equals(pwg,pw3)
 
     # Nexus-authored representative scf input
@@ -726,13 +723,13 @@ def test_input(tmp_path):
         pseudos         = ['Ar.nexus-test.UPF'],
         elem            = ['Ar'],
         pos             = [[0.0,0.0,0.0]],
-        pos_specifier   = 'crystal',
+        at_pos_specifier   = 'crystal',
         kgrid           = (5,5,5),
         kshift          = (1,1,1),
         )
     generations[infile] = pw
     pw.write(write_path)
-    pw2 = PwscfInput(filepath=write_path)
+    pw2 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,reads[infile])
 
     # Nexus-authored representative relax input
@@ -760,7 +757,7 @@ def test_input(tmp_path):
         elem            = ['H','H'],
         pos             = [[4.50,4.50,4.09],
                            [4.50,4.50,4.91]],
-        pos_specifier   = 'angstrom',
+        at_pos_specifier   = 'angstrom',
         kgrid           = (1,1,1),
         kshift          = (0,0,0),
         force_multipliers = np.array([
@@ -770,7 +767,7 @@ def test_input(tmp_path):
     )
     generations[infile] = pw
     pw.write(write_path)
-    pw2 = PwscfInput(filepath=write_path)
+    pw2 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,reads[infile])
 
     # Nexus-authored representative bands input.  The explicit path is set on
@@ -808,14 +805,14 @@ def test_input(tmp_path):
         pseudos         = ['Ar.nexus-test.UPF'],
         elem            = ['Ar'],
         pos             = [[0.0,0.0,0.0]],
-        pos_specifier   = 'crystal',
+        at_pos_specifier   = 'crystal',
         kgrid           = (1,1,1),
         kshift          = (0,0,0),
         k_points_card   = k_points,
         )
     generations[infile] = pw
     pw.write(write_path)
-    pw2 = PwscfInput(filepath=write_path)
+    pw2 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,reads[infile])
 
     # Nexus-authored representative Hubbard B/E2/E3 input
@@ -840,7 +837,7 @@ def test_input(tmp_path):
         elem            = ['Ce','Fe'],
         pos             = [[0.0,0.0,0.0],
                            [0.5,0.5,0.5]],
-        pos_specifier   = 'crystal',
+        at_pos_specifier   = 'crystal',
         kgrid           = (4,4,4),
         kshift          = (0,0,0),
         hubbard         = {
@@ -850,11 +847,11 @@ def test_input(tmp_path):
             'E2': {'Ce-4f':0.12},
             'E3': {'Ce-4f':0.04},
             },
-        hubbard_proj    = 'atomic',
+        hubbard_specifier = 'atomic',
         )
     generations[infile] = pw
     pw.write(write_path)
-    pw2 = PwscfInput(filepath=write_path)
+    pw2 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,reads[infile])
 #end def test_input
 
@@ -866,8 +863,9 @@ def test_supplemental_input_generation(tmp_path):
         write_path = tmp_path / f'{name}.in'
         pw.write(write_path)
         pwr = PwscfInput(write_path)
-        assert object_eq(pw,pwr,int_as_float=True,atol=5e-4)
+        assert_pwscf_input_equals(pw, pwr)
     #end def check_round_trip
+    register_pseudo_files(["C.UPF", "B.ccECP.upf", "N.ccECP.upf"])
 
     carbon = dict(
         prefix        = 'carbon',
@@ -891,7 +889,7 @@ def test_supplemental_input_generation(tmp_path):
         pseudos       = ['C.UPF'],
         elem          = ['C','C'],
         pos           = [[0.0,0.0,0.0],[0.255,0.245,0.250]],
-        pos_specifier = 'crystal',
+        at_pos_specifier = 'crystal',
         kgrid         = np.array((2,2,2)),
         kshift        = np.array((0,0,0)),
         )
@@ -929,9 +927,7 @@ def test_supplemental_input_generation(tmp_path):
     assert vc_md.cell.cell_dynamics == 'pr'
     check_round_trip('vc_md',vc_md)
 
-    crystal_kpoints = generate_pwscf_input(calculation='scf',**carbon)
-    crystal_kpoints.k_points.clear()
-    crystal_kpoints.k_points.update(
+    kpts_card = KPoints(
         specifier = 'crystal',
         nkpoints  = 4,
         kpoints   = np.array([
@@ -939,9 +935,14 @@ def test_supplemental_input_generation(tmp_path):
             [0.25,0.00,0.00],
             [0.25,0.25,0.00],
             [0.25,0.25,0.25],
-            ]),
+        ]),
         weights   = np.array([0.10,0.20,0.30,0.40]),
-        )
+    )
+    crystal_kpoints = generate_pwscf_input(
+        calculation='scf',
+        k_points_card=kpts_card,
+        **carbon
+    )
     assert crystal_kpoints.k_points.specifier == 'crystal'
     assert np.allclose(crystal_kpoints.k_points.weights,[0.10,0.20,0.30,0.40])
     check_round_trip('crystal_kpoints',crystal_kpoints)
@@ -970,7 +971,7 @@ def test_supplemental_input_generation(tmp_path):
         pseudos       = ['B.ccECP.upf','N.ccECP.upf'],
         elem          = ['B','N'],
         pos           = [[0.0,0.0,0.0],[0.25,0.25,0.25]],
-        pos_specifier = 'crystal',
+        at_pos_specifier = 'crystal',
         kgrid         = np.array((3,3,3)),
         kshift        = np.array((0,0,0)),
         )

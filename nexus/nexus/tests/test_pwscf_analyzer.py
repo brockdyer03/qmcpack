@@ -71,13 +71,29 @@ TRIPLE_SOURCE_CASES = (
 def write_input(directory,calculation='scf',prefix='pwscf',outdir='.'):
     """Write a minimal PWSCF input used by analyzer policy tests."""
     infile = directory/'pwscf.in'
-    infile.write_text(
-        "&CONTROL\n"
-        f"  calculation = '{calculation}'\n"
-        f"  prefix = '{prefix}'\n"
-        f"  outdir = '{outdir}'\n"
-        "/\n"
-        )
+    infile.write_text(f"""\
+&CONTROL
+    calculation = "{calculation}",
+    prefix = "{prefix}",
+    outdir = "{outdir}",
+/
+&SYSTEM
+    ibrav      = 1,
+    celldm(1)  = 5,
+    nat        = 1,
+    ntyp       = 1,
+    ecutwfc    = 10,
+/
+&ELECTRONS
+/
+&IONS
+/
+ATOMIC_SPECIES
+    C  12.011 C.BFD.upf
+ATOMIC_POSITIONS (bohr)
+    C     0.0000000000     0.0000000000     0.0000000000
+K_POINTS (gamma)
+""")
     return infile
 #end def write_input
 
@@ -525,11 +541,7 @@ End final coordinates
 
 
 def test_calculation_sources_are_independent(tmp_path):
-    (tmp_path/'pwscf.in').write_text('''\
-&CONTROL
-  calculation = 'relax'
-/
-''')
+    write_input(tmp_path, "relax")
     (tmp_path/'pwscf.out').write_text('''\
 BFGS Geometry Optimization
 CELL_PARAMETERS (alat= 5.0)
@@ -560,7 +572,7 @@ CELL_PARAMETERS (alat= 5.0)
 
 
 def test_pw2casino_analyzer_read(tmp_path):
-    (tmp_path/'pwscf.in').write_text("&CONTROL\n  calculation = 'scf'\n/\n")
+    write_input(tmp_path)
     (tmp_path/'pwscf.out').write_text('Self-consistent Calculation\n')
     (tmp_path/'pw2casino.out').write_text('Kinetic energy from orbitals = 1.25D+01\n')
 
@@ -981,12 +993,7 @@ def test_legacy_xml(tmp_path,monkeypatch):
 
 def test_schema_queries_are_preferred(tmp_path):
     """Modern XML supplies query data even when the text output is sparse."""
-    (tmp_path/'pwscf.in').write_text("""&CONTROL
- calculation = 'relax'
- prefix = 'pwscf'
- outdir = '.'
-/
-""")
+    write_input(tmp_path, "relax")
     (tmp_path/'pwscf.out').write_text('Self-consistent Calculation\n')
     savedir = tmp_path/'pwscf.save'
     savedir.mkdir()
@@ -1086,12 +1093,7 @@ def test_schema_semantic_errors_are_field_local(tmp_path):
 
 
 def test_default_source_requires_one_file(tmp_path):
-    (tmp_path/'pwscf.in').write_text("""&CONTROL
- calculation = 'scf'
- prefix = 'pwscf'
- outdir = '.'
-/
-""")
+    write_input(tmp_path)
     savedir = tmp_path/'pwscf.save'
     savedir.mkdir()
     (savedir/'data-file-schema.xml').write_text('''\

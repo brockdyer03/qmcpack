@@ -157,7 +157,6 @@ from .numpy_extensions import reshape_inplace
 from .periodic_table import Elements
 from .physical_system import PhysicalSystem
 from .pseudoset import PseudoSet, pp_elem_label
-from .pwscf_input import array_to_string as pwscf_array_string
 from .simulation import SimulationInput, SimulationInputTemplate
 from .structure import Jellium, Structure, get_kpath
 from .unit_converter import convert
@@ -265,7 +264,25 @@ def render_bool(var,T,F):
 
 bool_write_types = {yesno,onezero,truefalse}
 
+def noconv(v):
+    return v
 
+def pwscf_array_string(array,pad="   ",fmt="16.8f",converter=noconv,rowsep="\n"):
+    s = ""
+    if len(array.shape) == 1:
+        s += pad
+        for val in array:
+            s += f"{converter(val):{fmt}} "
+        s += rowsep
+    else:
+        for row in array:
+            s += pad
+            for val in row:
+                s += f"{converter(val):{fmt}} "
+            s += rowsep
+
+    return s
+#end def array_to_string
 
 
 

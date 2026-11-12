@@ -36,8 +36,8 @@
 
 
 ATOMIC_SPECIES 
-   H  1.008 H.BFD.upf
    O  15.999 O.BFD.upf
+   H  1.008 H.BFD.upf
 
 ATOMIC_POSITIONS bohr
    O        4.05580089       4.05580089       3.00901473 

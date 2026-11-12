@@ -185,6 +185,7 @@ nscf = generate_pwscf(
     diagonalization  = 'david',
     kgrid            = None,
     kshift           = None,
+    kpts_specifier   = "crystal",
     # workflow dependencies
     dependencies = (scf,'charge_density'),
     )

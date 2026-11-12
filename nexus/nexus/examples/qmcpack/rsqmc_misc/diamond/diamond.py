@@ -40,6 +40,7 @@ scf = generate_pwscf(
     wf_collect   = True,
     system       = dia16,
     pseudos      = ['C.BFD.upf'],
+    kpts_specifier = "crystal",
     )
 
 conv = generate_pw2qmcpack(

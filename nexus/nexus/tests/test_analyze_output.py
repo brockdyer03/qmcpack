@@ -4,7 +4,7 @@ from .. import analyze_output
 from ..machines import job
 from ..pwscf import generate_pwscf
 from ..testing import clear_all_sims
-from . import TEST_DIR, NexusTestOrder
+from . import TEST_DIR, NexusTestOrder, register_pseudo_files
 from .test_pwscf_simulation import get_system
 
 pytestmark = pytest.mark.order(NexusTestOrder.ANALYZE_OUTPUT)
@@ -60,9 +60,11 @@ def test_analyze_output_unified_paths():
 
 
 def test_analyze_output_simulation_forms(tmp_path):
+    register_pseudo_files(["C.BFD.upf"])
     sim = generate_pwscf(
         job    = job(machine='ws1',cores=1),
         system = get_system(),
+        pseudos= ["C.BFD.upf"],
         )
     sentinel = object()
     sim.imresdir = str(tmp_path)
