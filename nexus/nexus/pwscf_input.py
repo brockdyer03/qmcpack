@@ -290,7 +290,7 @@ class NamelistBase:
             else:
                 types = {type(v) for v in value}
 
-            if not types.issubset(def_types):
+            if len(types) > 1:
                 msg = f"Value for `{name}` has inconsistent types!"
                 if strict:
                     raise TypeError(msg)

@@ -80,6 +80,18 @@ for input_name in (
 for file in TEST_FILES.values():
     assert(file.exists()), f"Test file not found! {file}"
 
+@pytest.fixture
+def phys_sys():
+    return generate_physical_system(
+        units = "A",
+        axes = np.eye(3),
+        elem = ["C", "H", "O"],
+        pos = np.arange(9).reshape((3, 3)),
+        C = 4,
+        H = 1,
+        O = 6,
+    )
+
 def assert_namelist_equals[T: NamelistBase](nml1: T, nml2: T) -> None:
     assert(type(nml1) is type(nml2))
     assert(nml1.params.keys() == nml2.params.keys())
@@ -348,6 +360,106 @@ def test_check_param_version():
     assert(current in msg)
     assert("removed" in msg)
     assert(removed in msg)
+
+
+@pytest.mark.parametrize(
+    argnames=(
+        "namelist", "name", "value", "version", "raises", "msg",
+    ),
+    argvalues=(
+        (Control, "calculation", "scf",     "7.6.0", None, None),
+        (Control, "calculation", "bean-md", "7.6.0", ValueError, "value"),
+        (Control, "calculation", 1234,      "7.6.0", TypeError,  "type"),
+        (Control, "nstep", 1,   "7.6.0", None, None),
+        (Control, "nstep", "1", "7.6.0", TypeError, "type"),
+        (Control, "trism", False, "7.1.0", None, None),
+        (Control, "trism", True,  "7.0.0", ValueError, "version"),
+
+        (System, "occupations", "smearing", "7.6.0", None, None),
+        (System, "occupations", "bean",     "7.6.0", ValueError, "value"),
+        (System, "occupations", 1234,       "7.6.0", TypeError,  "type"),
+        (System, "ibrav", 1,   "7.6.0", None, None),
+        (System, "ibrav", "1", "7.6.0", TypeError, "type"),
+        (System, "celldm", {1: 1.0, 2: 1.0}, "7.6.0", None, None),
+        (System, "celldm", {1: "a", 2: "b"}, "7.6.0", TypeError,  "type"),
+        (System, "celldm", {1: 1.0, 2: "b"}, "7.6.0", TypeError,  "inconsistent"),
+        (System, "celldm", {1: 1.0, 7: 1.0}, "7.6.0", ValueError, "shape"),
+        (System, "starting_charge", {1: 1.0, 2: 1.0}, "7.6.0", None, None),
+        (System, "starting_charge", {1: "a", 2: "b"}, "7.6.0", TypeError,  "type"),
+        (System, "starting_charge", {1: 1.0, 2: "b"}, "7.6.0", TypeError,  "inconsistent"),
+        (System, "starting_charge", {1: 1.0, 4: 1.0}, "7.6.0", ValueError, "shape"),
+
+        (Electrons, "diagonalization", "david", "7.6.0", None, None),
+        (Electrons, "diagonalization", "bean",  "7.6.0", ValueError, "value"),
+        (Electrons, "diagonalization", 1234,    "7.6.0", TypeError,  "type"),
+        (Electrons, "efield_cart", {1: 1.0, 2: 1.0}, "7.6.0", None, None),
+        (Electrons, "efield_cart", {1: "a", 2: "b"}, "7.6.0", TypeError,  "type"),
+        (Electrons, "efield_cart", {1: 1.0, 2: "b"}, "7.6.0", TypeError,  "inconsistent"),
+        (Electrons, "efield_cart", {1: 1.0, 7: 1.0}, "7.6.0", ValueError, "shape"),
+
+        (Ions, "ion_dynamics", "bfgs", "7.6.0", None, None),
+        (Ions, "ion_dynamics", "bean",  "7.6.0", ValueError, "value"),
+        (Ions, "ion_dynamics", 1234,    "7.6.0", TypeError,  "type"),
+        (Ions, "nhgrp", {1: 1,   2: 1},   "7.6.0", None, None),
+        (Ions, "nhgrp", {1: "a", 2: "b"}, "7.6.0", TypeError,  "type"),
+        (Ions, "nhgrp", {1: 1,   2: "b"}, "7.6.0", TypeError,  "inconsistent"),
+        (Ions, "nhgrp", {1: 1,   4: 1},   "7.6.0", ValueError, "shape"),
+        (Ions, "nhgrp", {1: 1,   2: 1},   "7.2.0", ValueError, "version"),
+
+        (Cell, "cell_dynamics", "bfgs",  "7.6.0", None, None),
+        (Cell, "cell_dynamics", "bean",  "7.6.0", ValueError, "value"),
+        (Cell, "cell_dynamics", 1234,    "7.6.0", TypeError,  "type"),
+        (Cell, "press", 1.0, "7.6.0", None, None),
+        (Cell, "press", "a", "7.6.0", TypeError, "type"),
+
+        (Fcp, "fcp_dynamics", "bfgs",  "7.6.0", None, None),
+        (Fcp, "fcp_dynamics", "bean",  "7.6.0", ValueError, "value"),
+        (Fcp, "fcp_dynamics", 1234,    "7.6.0", TypeError,  "type"),
+
+        (Rism, "laue_wall", "auto", "7.6.0", None, None),
+        (Rism, "laue_wall", "bean", "7.6.0", ValueError, "value"),
+        (Rism, "laue_wall", 1234,   "7.6.0", TypeError,  "type"),
+        (Rism, "laue_wall", "auto", "7.0.0", ValueError, "version"),
+        (Rism, "solute_lj", {1: "uff", 2: "none"},    "7.6.0", None, None),
+        (Rism, "solute_lj", {1: 1,     2: 1},         "7.6.0", TypeError,  "type"),
+        (Rism, "solute_lj", {1: 1,     2: "none"},    "7.6.0", TypeError,  "inconsistent"),
+        (Rism, "solute_lj", {1: "uff", 4: "opls-aa"}, "7.6.0", ValueError, "shape"),
+        (Rism, "solute_lj", {1: "uff", 2: "none"},    "7.0.0", ValueError, "version"),
+    ),
+)
+def test_check_param(phys_sys, namelist, name, value, version, raises, msg):
+    if raises is None:
+        namelist.check_param(
+            name=name,
+            value=value,
+            version=version,
+            phys_sys=phys_sys,
+            strict=True
+        )
+    else:
+        match msg:
+            case "type":
+                msg = f"The parameter `{name}` has the incorrect type"
+            case "inconsistent":
+                msg = f"Value for `{name}` has inconsistent types"
+            case "value":
+                msg = f"The parameter `{name}` has the incorrect value"
+            case "shape":
+                msg = f"The value for `{name}` does not have the correct shape"
+            case "version":
+                msg = fr"{name} was added in version .*?, but you are using version {version}"
+
+        with pytest.raises(
+            raises,
+            match=msg,
+        ):
+            namelist.check_param(
+                name=name,
+                value=value,
+                version=version,
+                phys_sys=phys_sys,
+                strict=True
+            )
 
 
 @isolate_nexus_core
