@@ -1,9 +1,11 @@
+import re
 from copy import deepcopy
 
 import numpy as np
 import pytest
 
-from ..developer import obj
+from ..developer import NotAnElementError, obj
+from ..generic import NexusUserWarning
 from ..periodic_table import Elements
 from ..physical_system import generate_physical_system
 from ..pseudoset import PseudoSet
@@ -34,7 +36,7 @@ from ..pwscf_input import (
     generate_pwscf_input,
 )
 from ..pwscf_input_defs import SystemDefinitions
-from ..structure import read_structure
+from ..structure import Structure, read_structure
 from ..unit_converter import convert
 from . import TEST_DIR, NexusTestOrder, isolate_nexus_core, register_pseudo_files
 
@@ -254,6 +256,14 @@ def test_join_array_params():
     }
     normalized = System.join_array_params(params)
     assert(normalized == ref)
+
+    with pytest.raises(
+        ValueError,
+        match="Multiple formats of parameter 'celldm' found!",
+    ):
+        normalized = System.join_array_params(
+            {"celldm(1)" : "a", "celldm" : ["a", "b"]}
+        )
 
 
 def test_check_param_shape():
@@ -498,6 +508,19 @@ def test_check_param(phys_sys, namelist, name, value, version, raises, msg):
                 strict=True
             )
 
+        with pytest.warns(
+            NexusUserWarning,
+            match=msg,
+        ):
+            namelist.check_param(
+                name=name,
+                value=value,
+                version=version,
+                phys_sys=phys_sys,
+                strict=False,
+                verbose=True
+            )
+
 
 def test_system_incorporate_phys_sys(phys_sys):
     system = System()
@@ -559,6 +582,18 @@ ATOMIC_SPECIES
     calc_at_spec = AtomicSpecies.read(ref_text.splitlines())
     assert_card_equals(calc_at_spec, ref_at_spec)
 
+    calc_at_spec = AtomicSpecies(
+        atoms=["O", "C", "H"],
+        masses={
+            "C": Elements.Carbon.atomic_weight,
+            "H": Elements.Hydrogen.atomic_weight,
+            "O": Elements.Oxygen.atomic_weight,
+        },
+        pseudos=pseudos.pseudos,
+        elem_order=["C", "H", "O"],
+    )
+    assert_card_equals(calc_at_spec, ref_at_spec)
+
     # Passing no masses
     calc_at_spec = AtomicSpecies(
         atoms=["C", "H", "O"],
@@ -577,6 +612,44 @@ ATOMIC_SPECIES
 
     calc_at_spec = AtomicSpecies.from_phys_sys(phys_sys, pseudos=pseudos)
     assert_card_equals(calc_at_spec, ref_at_spec)
+
+    with pytest.raises(
+        NotAnElementError,
+        match="Not all atoms supplied are elements!",
+    ):
+        AtomicSpecies(["Bean"], masses=None, pseudos=pseudos)
+
+    with pytest.raises(
+        ValueError,
+        match="No pseudos provided!",
+    ):
+        AtomicSpecies(["B"], masses=None, pseudos=[])
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=re.escape(
+            "The following pseudopotential files are not present in PseudoSet.pseudo_files"
+        ),
+    ):
+        AtomicSpecies(["B"], masses=None, pseudos=["not_a_file.upf"])
+
+    with pytest.raises(
+        ValueError,
+        match="Atoms, masses, and pseudos must all have the same atoms!",
+    ):
+        AtomicSpecies(["C", "H", "O"], masses={"H": 1}, pseudos=pseudos)
+
+    with pytest.raises(
+        ValueError,
+        match="`elem_order` is missing some atomic species!",
+    ):
+        AtomicSpecies(["C"], masses=None, pseudos=pseudos, elem_order=["H"])
+
+    with pytest.raises(
+        ValueError,
+        match="Repeated elements in `elem_order` not allowed!",
+    ):
+        AtomicSpecies(["C"], masses=None, pseudos=pseudos, elem_order=["C", "C"])
 
 
 def test_atomic_positions(frozen_phys_sys):
@@ -628,6 +701,68 @@ ATOMIC_POSITIONS (angstrom)
     calc_at_pos = ref_at_pos.change_specifier("bohr", None, in_place=False)
     assert_card_equals(calc_at_pos, ref_bohr_at_pos)
 
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        AtomicPositions(specifier="bean", atoms=["B"], positions=np.ones((1, 3)))
+
+    with pytest.raises(
+        NotAnElementError,
+        match="Not all atoms supplied are elements!",
+    ):
+        AtomicPositions(specifier="bohr", atoms=["Bean"], positions=np.ones((1, 3)))
+
+    with pytest.raises(
+        ValueError,
+        match="The pos array must be the same length as the number of atoms!",
+    ):
+        AtomicPositions(specifier="bohr", atoms=["C"], positions=np.ones((3, 3)))
+
+    with pytest.raises(
+        ValueError,
+        match="The force_multipliers array must have the same dimension as the positions!",
+    ):
+        AtomicPositions(
+            specifier="bohr",
+            atoms=["C", "C", "C"],
+            positions=np.ones((3, 3)),
+            force_multipliers=np.ones((4, 3), dtype=int),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="`force_multipliers` must be an integer or boolean array!",
+    ):
+        AtomicPositions(
+            specifier="bohr",
+            atoms=["C", "C", "C"],
+            positions=np.ones((3, 3)),
+            force_multipliers=np.ones((3, 3), dtype=float),
+        )
+
+    fm = np.ones((3, 3), dtype=int)
+    fm += np.triu(fm) * 2
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "All values in `force_multipliers` must be 0 or 1!\n"
+            "The array is not 0 or 1 at these locations:\n"
+            "  force_multipliers[0, 0] = 3\n"
+            "  force_multipliers[0, 1] = 3\n"
+            "  force_multipliers[0, 2] = 3\n"
+            "  force_multipliers[1, 1] = 3\n"
+            "  force_multipliers[1, 2] = 3\n"
+            "  force_multipliers[2, 2] = 3\n"
+        ),
+    ):
+        AtomicPositions(
+            specifier="bohr",
+            atoms=["C", "C", "C"],
+            positions=np.ones((3, 3)),
+            force_multipliers=fm,
+        )
+
 
 def test_kpoints(phys_sys):
     ref_kpoints = KPoints(
@@ -648,6 +783,8 @@ def test_kpoints(phys_sys):
         ),
         weights=np.ones((8,), dtype=int),
     )
+
+    assert(ref_kpoints.nkpoints == 8)
 
     ref_text = """\
 K_POINTS (crystal)
@@ -691,8 +828,10 @@ K_POINTS (crystal)
     calc_kpoints = KPoints.from_phys_sys(phys_sys, as_crystal=False)
     assert_card_equals(calc_kpoints, ref_kpoints_tpiba)
 
+    assert(KPoints("automatic", grid=(2, 2, 2), shift=(0, 0, 0)).nkpoints == 8)
 
     ref_kpoints_gamma = KPoints(specifier="gamma")
+    assert(ref_kpoints_gamma.nkpoints == 1)
     gamma_phys_sys = generate_physical_system(
         units = "A",
         axes = np.eye(3) * 2,
@@ -730,6 +869,112 @@ K_POINTS (crystal)
         gamma_phys_sys, no_assume=False, no_gamma=True
     )
     assert_card_equals(calc_kpoints, ref_kpoints_automatic)
+
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        KPoints(specifier="bean")
+
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        KPoints.read(["K_POINTS (bean)"])
+
+    s = Structure()
+    with pytest.raises(
+        ValueError,
+        match="Structure has no k-points, can not create card!",
+    ):
+        KPoints.from_phys_sys(s)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("'grid' must have shape (3,)"),
+    ):
+        KPoints(specifier="automatic", grid=np.ones((4,)), shift=np.ones((3,)))
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("'shift' must have shape (3,)"),
+    ):
+        KPoints(specifier="automatic", grid=np.ones((3,)), shift=np.ones((4,)))
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("'kpoints' must have shape (4, 3)"),
+    ):
+        KPoints(
+            specifier="crystal",
+            nkpoints=4,
+            kpoints=np.ones((5,5)),
+            weights=np.ones((4,3)),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("'weights' must have shape (4,)"),
+    ):
+        KPoints(
+            specifier="crystal",
+            nkpoints=4,
+            kpoints=np.ones((4,3)),
+            weights=np.ones((5,2)),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot map arbitrary kpoints into an automatic Monkhorst-Pack mesh!",
+    ):
+        ref_kpoints.change_specifier("automatic", None)
+
+
+def test_cell_parameters(phys_sys):
+    ref_cell_params = CellParameters(
+        axes=np.eye(3, dtype=float) * 2,
+        specifier="angstrom",
+    )
+
+    ref_text = """\
+CELL_PARAMETERS (angstrom)
+    2.00000000       0.00000000       0.00000000
+    0.00000000       2.00000000       0.00000000
+    0.00000000       0.00000000       2.00000000
+"""
+
+    assert(ref_cell_params.write() == ref_text)
+
+    calc_cell_params = CellParameters.read(ref_text.splitlines())
+    assert_card_equals(calc_cell_params, ref_cell_params)
+
+    calc_cell_params = CellParameters.from_phys_sys(phys_sys)
+    assert_card_equals(calc_cell_params, ref_cell_params)
+
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        CellParameters(axes=np.eye(3), specifier="bean")
+
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        CellParameters.read(["CELL_PARAMETERS (bean)"])
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("'axes' must have shape (3, 3)"),
+    ):
+        CellParameters(axes=np.arange(3), specifier="angstrom")
+
+    s = Structure()
+    with pytest.raises(
+        ValueError,
+        match="Structure does not have axes!",
+    ):
+        CellParameters.from_phys_sys(s)
 
 
 @isolate_nexus_core

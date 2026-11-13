@@ -50,7 +50,7 @@ import numpy.typing as npt
 from numpy import pi
 from numpy.linalg import inv
 
-from .developer import FileFormatError, NexusError, NotAnElementError, obj, warn
+from .developer import FileFormatError, NexusError, NotAnElementError, warn
 from .generic import nxs_deprecate
 from .periodic_table import Elements
 from .physical_system import PhysicalSystem
@@ -572,10 +572,7 @@ class NamelistBase:
                         and arr_name in normalized
                     )
                 ):
-                    msg = (
-                        f"Multiple formats of parameter '{arr_name}' found!\n"
-                        f"Second Occurence: {key}\n"
-                    )
+                    msg = f"Multiple formats of parameter '{key}' found!"
                     raise ValueError(msg)
 
                 if klow == arr_name: # Already in the correct form
@@ -971,29 +968,29 @@ class AtomicPositions(CardBase):
 
     def __init__(
         self,
-        atoms: list[str] | Structure | PhysicalSystem,
-        positions: npt.ArrayLike[np.floating] | None = None,
+        specifier: AtomicPositionsSpecifier,
+        atoms: list[str],
+        positions: npt.ArrayLike[np.floating],
         force_multipliers: npt.ArrayLike[np.bool_] | None = None,
-        specifier: AtomicPositionsSpecifier | None = None,
     ):
+        if (s_low := specifier.lower()) in AtomicPositions.valid_specifiers:
+            self.specifier = s_low
+        else:
+            msg = (
+                f"Specifier '{specifier}' is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(AtomicPositions.valid_specifiers)}"
+            )
+            raise ValueError(msg)
+
         self.atoms = atoms
         if not all(Elements.is_element(e) for e in self.atoms):
             msg = "Not all atoms supplied are elements!"
             raise NotAnElementError(msg)
 
-        if positions is None:
-            msg = "pos can not be None when `atoms` is a list of elements!"
-            raise ValueError(msg)
-        elif len(positions) != len(self.atoms):
+        if len(positions) != len(self.atoms):
             msg = "The pos array must be the same length as the number of atoms!"
             raise ValueError(msg)
         self.positions = np.asarray(positions, dtype=float)
-
-        if (s_low := specifier.lower()) in self.valid_specifiers:
-            self.specifier = s_low
-        else:
-            msg = f"Invalid or unsupported specifier '{specifier}'!"
-            raise ValueError(msg)
 
         if force_multipliers is not None:
             force_multipliers = np.asarray(force_multipliers)
@@ -1118,9 +1115,6 @@ class AtomicPositions(CardBase):
             structure = phys_sys
 
         atoms = structure.elem.tolist()
-        if not all(Elements.is_element(e) for e in atoms):
-            msg = "Not all atoms supplied are elements!"
-            raise NotAnElementError(msg)
 
         pos = structure.pos
         specifier = "bohr" if "b" in structure.units.lower() else "angstrom"
@@ -1318,7 +1312,10 @@ class KPoints(CardBase):
     def nkpoints(self) -> int | None:
         if self.kpoints is not None:
             return self.kpoints.shape[0]
-        return None
+        elif self.grid is not None:
+            return np.prod(self.grid)
+        else:
+            return 1
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
@@ -1452,39 +1449,39 @@ class KPoints(CardBase):
             structure = phys_sys
 
         nkpoints = len(structure.kpoints)
-        if nkpoints > 0:
-            if structure.at_Gpoint() and not no_assume:
-                if no_gamma:
-                    return cls(
-                        specifier="automatic",
-                        grid=(1, 1, 1),
-                        shift=(0, 0, 0),
-                    )
-                else:
-                    return cls(specifier="gamma")
-            elif structure.at_Lpoint() and not no_assume:
+        if nkpoints == 0:
+            msg = "Structure has no k-points, can not create card!"
+            raise ValueError(msg)
+
+        if structure.at_Gpoint() and not no_assume:
+            if no_gamma:
                 return cls(
                     specifier="automatic",
                     grid=(1, 1, 1),
-                    shift=(1, 1, 1),
-                )
-            elif as_crystal:
-                return cls(
-                    specifier="crystal",
-                    nkpoints=nkpoints,
-                    kpoints=structure.kpoints_unit(),
-                    weights=structure.kweights.copy(),
+                    shift=(0, 0, 0),
                 )
             else:
-                return cls(
-                    specifier="tpiba",
-                    nkpoints=nkpoints,
-                    kpoints=structure.kpoints / (2 * pi),
-                    weights=structure.kweights.copy(),
-                )
+                return cls(specifier="gamma")
+        elif structure.at_Lpoint() and not no_assume:
+            return cls(
+                specifier="automatic",
+                grid=(1, 1, 1),
+                shift=(1, 1, 1),
+            )
+        elif as_crystal:
+            return cls(
+                specifier="crystal",
+                nkpoints=nkpoints,
+                kpoints=structure.kpoints_unit(),
+                weights=structure.kweights.copy(),
+            )
         else:
-            msg = "Structure has no k-points, can not create card!"
-            raise ValueError(msg)
+            return cls(
+                specifier="tpiba",
+                nkpoints=nkpoints,
+                kpoints=structure.kpoints / (2 * pi),
+                weights=structure.kweights.copy(),
+            )
 
 
 class CellParameters(CardBase):
@@ -1510,7 +1507,7 @@ class CellParameters(CardBase):
         s_low = specifier.lower()
         if s_low not in CellParameters.valid_specifiers:
             msg = (
-                f"Specifier {specifier} is not known to Nexus!\n"
+                f"Specifier '{specifier}' is not known to Nexus!\n"
                 f"Valid specifiers are {sorted(CellParameters.valid_specifiers)}"
             )
             raise ValueError(msg)
@@ -1519,7 +1516,6 @@ class CellParameters(CardBase):
         if (shape := axes.shape) != (3, 3):
             msg = f"'axes' must have shape (3, 3) but has shape {shape}!"
             raise ValueError(msg)
-
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
@@ -1544,7 +1540,6 @@ class CellParameters(CardBase):
             axes[idx, :] = line.split()
 
         return cls(axes=axes, specifier=specifier)
-    #end def read
 
     def write(self) -> str:
         text = f"{self.name.upper()} ({self.specifier})\n"
@@ -1553,7 +1548,6 @@ class CellParameters(CardBase):
             lines += "{:{f}} {:{f}} {:{f}}\n".format(*vec, f=">16.8f")
         text += indent(dedent(lines), "    ")
         return text
-    #end def write
 
     def change_specifier(
         self,
@@ -1597,7 +1591,6 @@ class CellParameters(CardBase):
 
         self.axes = vec
         self.specifier = s_low
-    #end def change_specifier
 
     @classmethod
     def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /) -> Self:
