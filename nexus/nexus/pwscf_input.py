@@ -601,7 +601,7 @@ class NamelistBase:
         normalized.update(params)
         return normalized
 
-    def incorporate_system(self, phys_sys: PhysicalSystem) -> None:
+    def incorporate_phys_sys(self, phys_sys: PhysicalSystem) -> None:
         pass
 
     def clear(self) -> None:
@@ -686,7 +686,7 @@ class System(NamelistBase):
     array_params = _get_array_params(namelist_def)
     namelist_names = _get_namelist_names(namelist_def)
 
-    def incorporate_system(
+    def incorporate_phys_sys(
         self,
         phys_sys: PhysicalSystem,
         *,
@@ -906,7 +906,7 @@ class AtomicSpecies(CardBase):
         self.atoms = ordered_species
         self.masses = dict(masses)
         self.pseudos = {
-            atom: Path(pseudo).resolve() for atom, pseudo in pseudos.items()
+            atom: Path(pseudo) for atom, pseudo in pseudos.items()
         }
 
     @classmethod
@@ -918,7 +918,10 @@ class AtomicSpecies(CardBase):
             atom, mass, pseudo = line.split()
             atoms.append(atom)
             masses[atom] = float(mass.lower().replace("d", "e"))
-            pseudos[atom] = pseudo
+            if (psp := PseudoSet.pseudo_files.get(pseudo)) is not None:
+                pseudos[atom] = psp
+            else:
+                pseudos[atom] = pseudo
 
         return cls(atoms, masses, pseudos, require_pseudos_exist=False)
 
@@ -1078,11 +1081,10 @@ class AtomicPositions(CardBase):
             )
             raise ValueError(msg)
 
-        scale = pwi.alat
         pos = self.positions
         match self.specifier: # Convert to bohr
             case "alat":
-                pos *= scale
+                pos *= pwi.alat
             case "bohr":
                 pass
             case "angstrom":
@@ -1092,7 +1094,7 @@ class AtomicPositions(CardBase):
 
         match new_specifier:
             case "alat":
-                pos /= scale
+                pos /= pwi.alat
             case "bohr":
                 pass
             case "angstrom":
@@ -1164,23 +1166,20 @@ class AtomicForces(CardBase):
         self.atoms = atoms
         self.forces = np.asarray(forces, dtype=float)
         if (shape := self.forces.shape) != (len(self.atoms), 3):
-            msg = f"'forces' must have shape {(len(self.atoms), 3)} but has shape {shape}!"
+            msg = f"`forces` must have shape {(len(self.atoms), 3)} but has shape {shape}!"
             raise ValueError(msg)
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
-        npos = len(lines)
-        dim = 3
+        n_forces = len(lines) - 1
         atoms = []
-        forces = np.empty((npos,dim), dtype=float)
+        forces = np.empty((n_forces, 3), dtype=float)
         for idx, l in enumerate(lines):
             tokens = l.split()
             atoms.append(tokens[0])
-            forces[idx,:] = np.array(tokens[1:4], dtype=float)
+            forces[idx, :] = tokens[1:4]
 
-        return cls(atoms=atoms,forces=forces)
-    #end def read
-
+        return cls(atoms=atoms, forces=forces)
 
     def write(self) -> str:
         text = f"{self.name.upper()} {self.specifier}\n"
@@ -1190,7 +1189,6 @@ class AtomicForces(CardBase):
             )
 
         return text
-    #end def write
 
 
 class KPoints(CardBase):
@@ -1415,26 +1413,25 @@ class KPoints(CardBase):
             msg = f"Specifier '{new_specifier}' is not known to Nexus!"
             raise ValueError(msg)
 
-        alat, kaxes = pwi.alat, pwi.kaxes
         match self.specifier:
             case "tpiba":
-                kpoints = self.kpoints * (2 * pi) / alat
+                kpoints = self.kpoints * (2 * pi) / pwi.alat
             case "gamma":
                 kpoints = np.zeros((1, 3), dtype=int)
             case "crystal":
-                kpoints = np.dot(self.kpoints, kaxes)
+                kpoints = np.dot(self.kpoints, pwi.kaxes)
             case "automatic":
                 grid  = self.grid
                 shift = 0.5 * self.shift
-                kpoints = kmesh(kaxes, grid, shift)
+                kpoints = kmesh(pwi.kaxes, grid, shift)
 
         match new_specifier:
             case 'tpiba':
-                kpoints = kpoints/ ((2 * pi) / alat)
+                kpoints = kpoints / ((2 * pi) / pwi.alat)
             case 'gamma':
                 kpoints = np.zeros((1, 3), dtype=int)
             case 'crystal':
-                kpoints = np.dot(kpoints, inv(kaxes))
+                kpoints = np.dot(kpoints, inv(pwi.kaxes))
 
         self.kpoints   = kpoints
         self.specifier = new_specifier
@@ -1445,6 +1442,7 @@ class KPoints(CardBase):
         phys_sys: PhysicalSystem | Structure,
         /,
         *,
+        as_crystal: bool = False,
         no_gamma: bool = False,
         no_assume: bool = True,
     ) -> Self:
@@ -1469,6 +1467,13 @@ class KPoints(CardBase):
                     specifier="automatic",
                     grid=(1, 1, 1),
                     shift=(1, 1, 1),
+                )
+            elif as_crystal:
+                return cls(
+                    specifier="crystal",
+                    nkpoints=nkpoints,
+                    kpoints=structure.kpoints_unit(),
+                    weights=structure.kweights.copy(),
                 )
             else:
                 return cls(
@@ -3742,7 +3747,7 @@ class PwscfInput(SimulationInput):
                     **value,
                 )
                 if phys_sys is not None:
-                    namelist.incorporate_system(phys_sys)
+                    namelist.incorporate_phys_sys(phys_sys)
                 setattr(self, group, namelist)
             else:
                 card = group_class(**value)
@@ -3813,7 +3818,7 @@ class PwscfInput(SimulationInput):
     ):
         system.check_folded_system()
         system.change_units("B")
-        self.system.incorporate_system(system, overwrite=True)
+        self.system.incorporate_phys_sys(system, overwrite=True)
         self.cell_parameters = CellParameters.from_phys_sys(system)
         self.k_points = KPoints.from_phys_sys(system, no_gamma=False, no_assume=False)
         self.atomic_species = AtomicSpecies.from_phys_sys(
@@ -4182,6 +4187,7 @@ def generate_pwscf_input(
         if system is not None and len(system.structure.kpoints) > 0:
             k_points_card = KPoints.from_phys_sys(
                 system,
+                as_crystal=True,
                 no_gamma=nogamma,
                 no_assume=False, # Retained for legacy compatibility
             )

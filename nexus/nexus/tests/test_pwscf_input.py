@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from ..developer import obj
+from ..periodic_table import Elements
 from ..physical_system import generate_physical_system
+from ..pseudoset import PseudoSet
 from ..pwscf_input import (
     AtomicForces,
     AtomicPositions,
@@ -33,6 +35,7 @@ from ..pwscf_input import (
 )
 from ..pwscf_input_defs import SystemDefinitions
 from ..structure import read_structure
+from ..unit_converter import convert
 from . import TEST_DIR, NexusTestOrder, isolate_nexus_core, register_pseudo_files
 
 pytestmark = pytest.mark.order(NexusTestOrder.PWSCF_INPUT)
@@ -52,6 +55,7 @@ TEST_FILES = {
     "VO2_M1_afm.xsf":         TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.xsf",
     "WSe2_band_structure.in": TEST_DIR / "test_pwscf_input_files/WSe2_band_structure.in",
     "README": TEST_DIR / "test_pwscf_input_files/README",
+    "pseudos": (TEST_DIR / "../examples/qmcpack/pseudopotentials/").resolve(),
     }
 
 # These are input-only counterparts to supplemental PwscfAnalyzer runs.  Keep
@@ -80,105 +84,138 @@ for input_name in (
 for file in TEST_FILES.values():
     assert(file.exists()), f"Test file not found! {file}"
 
+@pytest.fixture(autouse=True)
+def cleanup():
+    PseudoSet.pseudo_files.update(
+        {
+            "C.BFD.upf": TEST_FILES["pseudos"] / "C.BFD.upf",
+            "H.BFD.upf": TEST_FILES["pseudos"] / "H.BFD.upf",
+            "O.BFD.upf": TEST_FILES["pseudos"] / "O.BFD.upf",
+        }
+    )
+
+    yield
+
+    del PseudoSet.pseudo_files["C.BFD.upf"]
+    del PseudoSet.pseudo_files["H.BFD.upf"]
+    del PseudoSet.pseudo_files["O.BFD.upf"]
+
 @pytest.fixture
 def phys_sys():
     return generate_physical_system(
         units = "A",
-        axes = np.eye(3),
+        axes = np.eye(3) * 2,
         elem = ["C", "H", "O"],
-        pos = np.arange(9).reshape((3, 3)),
+        pos = np.arange(9, dtype=float).reshape((3, 3)),
+        kgrid = (2, 2, 2),
+        kshift = (0, 0, 0),
         C = 4,
         H = 1,
         O = 6,
     )
 
-def assert_namelist_equals[T: NamelistBase](nml1: T, nml2: T) -> None:
-    assert(type(nml1) is type(nml2))
-    assert(nml1.params.keys() == nml2.params.keys())
-    for key, value_1 in nml1.params.items():
-        value_2 = nml2.params[key]
+@pytest.fixture
+def frozen_phys_sys(phys_sys):
+    ps = phys_sys.copy()
+    # Note that this array is the inverse of what QE expects for force multipliers
+    ps.structure.frozen = np.array(
+        [
+            [False, True,  True],
+            [False, False, True],
+            [True,  False, False],
+        ],
+        dtype=bool,
+    )
+    return ps
+
+
+def assert_namelist_equals[T: NamelistBase](calc_nml: T, ref_nml: T) -> None:
+    assert(type(calc_nml) is type(ref_nml))
+    assert(calc_nml.params.keys() == ref_nml.params.keys())
+    for key, value_1 in calc_nml.params.items():
+        value_2 = ref_nml.params[key]
         assert(type(value_1) is type(value_2))
         if isinstance(value_1, np.ndarray):
             np.testing.assert_allclose(value_1, value_2)
         else:
             assert(value_1 == value_2)
 
-def assert_card_equals[T: CardBase](card1: T, card2: T) -> None:
-    assert(type(card1) is type(card2))
-    if isinstance(card1, AtomicSpecies) and isinstance(card2, AtomicSpecies):
-        assert(card1.atoms == card2.atoms)
-        assert(card1.masses == card2.masses)
-        assert(card1.pseudos == card2.pseudos)
+def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
+    assert(type(calc_card) is type(ref_card))
+    if isinstance(calc_card, AtomicSpecies) and isinstance(ref_card, AtomicSpecies):
+        assert(calc_card.atoms == ref_card.atoms)
+        assert(calc_card.masses == ref_card.masses)
+        assert(calc_card.pseudos == ref_card.pseudos)
 
-    elif isinstance(card1, AtomicPositions) and isinstance(card2, AtomicPositions):
-        assert(card1.specifier == card2.specifier)
-        assert(card1.atoms == card2.atoms)
-        np.testing.assert_allclose(card1.positions, card2.positions, rtol=1e-6)
-        assert(type(card1.force_multipliers) is type(card2.force_multipliers))
-        if card1.force_multipliers is not None:
-            np.testing.assert_allclose(card1.force_multipliers, card2.force_multipliers)
+    elif isinstance(calc_card, AtomicPositions) and isinstance(ref_card, AtomicPositions):
+        assert(calc_card.specifier == ref_card.specifier)
+        assert(calc_card.atoms == ref_card.atoms)
+        np.testing.assert_allclose(calc_card.positions, ref_card.positions, rtol=1e-6)
+        assert(type(calc_card.force_multipliers) is type(ref_card.force_multipliers))
+        if calc_card.force_multipliers is not None:
+            np.testing.assert_allclose(calc_card.force_multipliers, ref_card.force_multipliers)
 
-    elif isinstance(card1, KPoints) and isinstance(card2, KPoints):
-        assert(card1.specifier == card2.specifier)
-        if card1.specifier == "automatic":
-            np.testing.assert_array_equal(card1.grid, card2.grid)
-            np.testing.assert_array_equal(card1.shift, card2.shift)
-        elif card1.specifier != "gamma":
-            assert(card1.nkpoints == card2.nkpoints)
-            np.testing.assert_allclose(card1.kpoints, card2.kpoints, rtol=1e-6)
-            assert(type(card1.weights) is type(card2.weights))
-            if card1.weights is not None:
-                np.testing.assert_allclose(card1.weights, card2.weights)
+    elif isinstance(calc_card, KPoints) and isinstance(ref_card, KPoints):
+        assert(calc_card.specifier == ref_card.specifier)
+        if calc_card.specifier == "automatic":
+            np.testing.assert_array_equal(calc_card.grid, ref_card.grid)
+            np.testing.assert_array_equal(calc_card.shift, ref_card.shift)
+        elif calc_card.specifier != "gamma":
+            assert(calc_card.nkpoints == ref_card.nkpoints)
+            np.testing.assert_allclose(calc_card.kpoints, ref_card.kpoints, rtol=1e-6)
+            assert(type(calc_card.weights) is type(ref_card.weights))
+            if calc_card.weights is not None:
+                np.testing.assert_allclose(calc_card.weights, ref_card.weights)
 
-    elif isinstance(card1, CellParameters) and isinstance(card2, CellParameters):
-        assert(card1.specifier == card2.specifier)
-        np.testing.assert_allclose(card1.axes, card2.axes)
+    elif isinstance(calc_card, CellParameters) and isinstance(ref_card, CellParameters):
+        assert(calc_card.specifier == ref_card.specifier)
+        np.testing.assert_allclose(calc_card.axes, ref_card.axes)
 
-    elif isinstance(card1, Hubbard) and isinstance(card2, Hubbard):
-        assert(card1.specifier == card2.specifier)
-        assert(len(card1.hubbard_params) == len(card2.hubbard_params))
+    elif isinstance(calc_card, Hubbard) and isinstance(ref_card, Hubbard):
+        assert(calc_card.specifier == ref_card.specifier)
+        assert(len(calc_card.hubbard_params) == len(ref_card.hubbard_params))
         # The classes make equality checks a bit difficult, so we check instead
         # that their output is the same.
-        hub1 = set(card1.write().splitlines())
-        hub2 = set(card2.write().splitlines())
+        hub1 = set(calc_card.write().splitlines())
+        hub2 = set(ref_card.write().splitlines())
         assert(hub1 == hub2)
 
-    elif isinstance(card1, Occupations) and isinstance(card2, Occupations):
-        np.testing.assert_allclose(card1.occupations, card2.occupations)
-        assert(type(card1.minority_spin_occs) is type(card2.minority_spin_occs))
-        if card1.minority_spin_occs is not None:
-            np.testing.assert_allclose(card1.minority_spin_occs, card2.minority_spin_occs)
+    elif isinstance(calc_card, Occupations) and isinstance(ref_card, Occupations):
+        np.testing.assert_allclose(calc_card.occupations, ref_card.occupations)
+        assert(type(calc_card.minority_spin_occs) is type(ref_card.minority_spin_occs))
+        if calc_card.minority_spin_occs is not None:
+            np.testing.assert_allclose(calc_card.minority_spin_occs, ref_card.minority_spin_occs)
 
-    elif isinstance(card1, AtomicForces) and isinstance(card2, AtomicForces):
-        assert(card1.atoms == card2.atoms)
-        np.testing.assert_allclose(card1.forces, card2.forces)
+    elif isinstance(calc_card, AtomicForces) and isinstance(ref_card, AtomicForces):
+        assert(calc_card.atoms == ref_card.atoms)
+        np.testing.assert_allclose(calc_card.forces, ref_card.forces)
 
-    elif isinstance(card1, Constraints) and isinstance(card2, Constraints):
-        assert(card1.tolerance == card2.tolerance)
+    elif isinstance(calc_card, Constraints) and isinstance(ref_card, Constraints):
+        assert(calc_card.tolerance == ref_card.tolerance)
         # The classes make equality checks a bit difficult, so we check instead
         # that their output is the same.
-        con1 = set(card1.write().splitlines())
-        con2 = set(card2.write().splitlines())
+        con1 = set(calc_card.write().splitlines())
+        con2 = set(ref_card.write().splitlines())
         assert(con1 == con2)
 
-def assert_pwscf_input_equals(pwi1: PwscfInput, pwi2: PwscfInput) -> None:
+def assert_pwscf_input_equals(calc_pwi: PwscfInput, ref_pwi: PwscfInput) -> None:
     for nml in PwscfInput.namelists:
-        assert(hasattr(pwi1, nml))
-        assert(hasattr(pwi2, nml))
-        pwi1_nml = getattr(pwi1, nml)
-        pwi2_nml = getattr(pwi2, nml)
-        assert(type(pwi1_nml) is type(pwi2_nml))
-        if not (pwi1_nml is None and pwi2_nml is None):
-            assert_card_equals(pwi1_nml, pwi2_nml)
+        assert(hasattr(calc_pwi, nml))
+        assert(hasattr(ref_pwi, nml))
+        calc_nml = getattr(calc_pwi, nml)
+        ref_nml = getattr(ref_pwi, nml)
+        assert(type(calc_nml) is type(ref_nml))
+        if not (calc_nml is None and ref_nml is None):
+            assert_card_equals(calc_nml, ref_nml)
 
     for card in PwscfInput.cards:
-        assert(hasattr(pwi1, card))
-        assert(hasattr(pwi2, card))
-        pwi1_card = getattr(pwi1, card)
-        pwi2_card = getattr(pwi2, card)
-        assert(type(pwi1_card) is type(pwi2_card))
-        if not (pwi1_card is None and pwi2_card is None):
-            assert_card_equals(pwi1_card, pwi2_card)
+        assert(hasattr(calc_pwi, card))
+        assert(hasattr(ref_pwi, card))
+        calc_card = getattr(calc_pwi, card)
+        ref_card = getattr(ref_pwi, card)
+        assert(type(calc_card) is type(ref_card))
+        if not (calc_card is None and ref_card is None):
+            assert_card_equals(calc_card, ref_card)
 
 
 def test_join_array_params():
@@ -462,6 +499,239 @@ def test_check_param(phys_sys, namelist, name, value, version, raises, msg):
             )
 
 
+def test_system_incorporate_phys_sys(phys_sys):
+    system = System()
+    assert(len(system.params) == 0)
+    system.incorporate_phys_sys(phys_sys, overwrite=False)
+    assert(system.params.keys() == {"ibrav", "nat", "ntyp", "tot_charge"})
+    assert(system.params["ibrav"]      == 0)
+    assert(system.params["nat"]        == phys_sys.n_ions)
+    assert(system.params["ntyp"]       == phys_sys.n_species)
+    assert(system.params["tot_charge"] == phys_sys.net_charge)
+
+    system = System(
+        check=True,
+        version="7.6.0",
+        phys_sys=phys_sys,
+        verbose=False,
+        strict=True,
+        ibrav=15,
+        nat=15,
+        ntyp=15,
+        tot_charge=15,
+    )
+
+    system.incorporate_phys_sys(phys_sys, overwrite=False)
+    assert(system.params["ibrav"]      == 15)
+    assert(system.params["nat"]        == 15)
+    assert(system.params["ntyp"]       == 15)
+    assert(system.params["tot_charge"] == 15)
+
+    system.incorporate_phys_sys(phys_sys, overwrite=True)
+
+    assert(system.params["ibrav"]      == 0)
+    assert(system.params["nat"]        == phys_sys.n_ions)
+    assert(system.params["ntyp"]       == phys_sys.n_species)
+    assert(system.params["tot_charge"] == phys_sys.net_charge)
+
+
+def test_atomic_species(phys_sys):
+    pseudos = PseudoSet.from_dir(TEST_FILES["pseudos"], code="espresso")
+    ref_at_spec = AtomicSpecies(
+        atoms=["C", "H", "O"],
+        masses={
+            "C": Elements.Carbon.atomic_weight,
+            "H": Elements.Hydrogen.atomic_weight,
+            "O": Elements.Oxygen.atomic_weight,
+        },
+        pseudos=pseudos.pseudos, # Just get the internal dictionary
+    )
+
+    ref_text = """\
+ATOMIC_SPECIES
+    C  12.011 C.BFD.upf
+    H   1.008 H.BFD.upf
+    O  15.999 O.BFD.upf
+"""
+
+    assert(ref_at_spec.write() == ref_text)
+
+    calc_at_spec = AtomicSpecies.read(ref_text.splitlines())
+    assert_card_equals(calc_at_spec, ref_at_spec)
+
+    # Passing no masses
+    calc_at_spec = AtomicSpecies(
+        atoms=["C", "H", "O"],
+        masses=None,
+        pseudos=pseudos.pseudos,
+    )
+    assert_card_equals(calc_at_spec, ref_at_spec)
+
+    # Passing a PseudoSet object
+    calc_at_spec = AtomicSpecies(
+        atoms=["C", "H", "O"],
+        masses=None,
+        pseudos=pseudos,
+    )
+    assert_card_equals(calc_at_spec, ref_at_spec)
+
+    calc_at_spec = AtomicSpecies.from_phys_sys(phys_sys, pseudos=pseudos)
+    assert_card_equals(calc_at_spec, ref_at_spec)
+
+
+def test_atomic_positions(frozen_phys_sys):
+    ref_at_pos = AtomicPositions(
+        atoms=["C", "H", "O"],
+        positions=np.arange(9, dtype=float).reshape((3, 3)),
+        force_multipliers=np.array(
+            [
+                [True,  False, False],
+                [True,  True,  False],
+                [False, True,  True],
+            ],
+            dtype=bool,
+        ),
+        specifier="angstrom",
+    )
+
+    ref_text = """\
+ATOMIC_POSITIONS (angstrom)
+    C     0.0000000000     1.0000000000     2.0000000000 1 0 0
+    H     3.0000000000     4.0000000000     5.0000000000 1 1 0
+    O     6.0000000000     7.0000000000     8.0000000000 0 1 1
+"""
+
+    assert(ref_at_pos.write() == ref_text)
+
+    calc_at_pos = AtomicPositions.read(ref_text.splitlines())
+    assert_card_equals(calc_at_pos, ref_at_pos)
+
+    calc_at_pos = AtomicPositions.from_phys_sys(frozen_phys_sys)
+    assert_card_equals(calc_at_pos, ref_at_pos)
+
+    ref_bohr_at_pos = AtomicPositions(
+        atoms=["C", "H", "O"],
+        positions=convert(np.arange(9, dtype=float).reshape((3, 3)), "A", "B"),
+        force_multipliers=np.array(
+            [
+                [True,  False, False],
+                [True,  True,  False],
+                [False, True,  True],
+            ],
+            dtype=bool,
+        ),
+        specifier="bohr",
+    )
+
+    # Since the function doesn't technically need an existing PwscfInput for
+    # the specifier change, we can safely pass None here.
+    calc_at_pos = ref_at_pos.change_specifier("bohr", None, in_place=False)
+    assert_card_equals(calc_at_pos, ref_bohr_at_pos)
+
+
+def test_kpoints(phys_sys):
+    ref_kpoints = KPoints(
+        specifier="crystal",
+        nkpoints=8,
+        kpoints=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [0.0, 0.0, 0.5],
+                [0.5, 0.0, 0.5],
+                [0.0, 0.5, 0.5],
+                [0.5, 0.5, 0.5]
+            ],
+            dtype=float,
+        ),
+        weights=np.ones((8,), dtype=int),
+    )
+
+    ref_text = """\
+K_POINTS (crystal)
+  8
+    0.0000000000     0.0000000000     0.0000000000     1.0000000000
+    0.5000000000     0.0000000000     0.0000000000     1.0000000000
+    0.0000000000     0.5000000000     0.0000000000     1.0000000000
+    0.5000000000     0.5000000000     0.0000000000     1.0000000000
+    0.0000000000     0.0000000000     0.5000000000     1.0000000000
+    0.5000000000     0.0000000000     0.5000000000     1.0000000000
+    0.0000000000     0.5000000000     0.5000000000     1.0000000000
+    0.5000000000     0.5000000000     0.5000000000     1.0000000000
+"""
+
+    assert(ref_kpoints.write() == ref_text)
+
+    calc_kpoints = KPoints.read(ref_text.splitlines())
+    assert_card_equals(calc_kpoints, ref_kpoints)
+
+    calc_kpoints = KPoints.from_phys_sys(phys_sys, as_crystal=True)
+    assert_card_equals(calc_kpoints, ref_kpoints)
+
+    ref_kpoints_tpiba = KPoints(
+        specifier="tpiba",
+        nkpoints=8,
+        kpoints=np.array(
+            [
+                [0.0,  0.0,  0.0],
+                [0.25, 0.0,  0.0],
+                [0.0,  0.25, 0.0],
+                [0.25, 0.25, 0.0],
+                [0.0,  0.0,  0.25],
+                [0.25, 0.0,  0.25],
+                [0.0,  0.25, 0.25],
+                [0.25, 0.25, 0.25],
+            ],
+            dtype=float,
+        ),
+        weights=np.ones((8,), dtype=int),
+    )
+    calc_kpoints = KPoints.from_phys_sys(phys_sys, as_crystal=False)
+    assert_card_equals(calc_kpoints, ref_kpoints_tpiba)
+
+
+    ref_kpoints_gamma = KPoints(specifier="gamma")
+    gamma_phys_sys = generate_physical_system(
+        units = "A",
+        axes = np.eye(3) * 2,
+        elem = ["C", "H", "O"],
+        pos = np.eye(3),
+        kgrid = (1, 1, 1),
+        kshift = (0, 0, 0),
+    )
+
+    calc_kpoints = KPoints.from_phys_sys(gamma_phys_sys, no_assume=False)
+    assert_card_equals(calc_kpoints, ref_kpoints_gamma)
+
+
+    ref_kpoints_L_point = KPoints(
+        specifier="automatic", grid=(1, 1, 1), shift=(1, 1, 1)
+    )
+    L_point_phys_sys = generate_physical_system(
+        units = "A",
+        axes = np.eye(3) * 2,
+        elem = ["C", "H", "O"],
+        pos = np.eye(3),
+        kgrid = (1, 1, 1),
+        kshift = (0.5, 0.5, 0.5),
+    )
+
+    calc_kpoints = KPoints.from_phys_sys(L_point_phys_sys, no_assume=False)
+    assert_card_equals(calc_kpoints, ref_kpoints_L_point)
+
+
+    ref_kpoints_automatic = KPoints(
+        specifier="automatic", grid=(1, 1, 1), shift=(0, 0, 0)
+    )
+
+    calc_kpoints = KPoints.from_phys_sys(
+        gamma_phys_sys, no_assume=False, no_gamma=True
+    )
+    assert_card_equals(calc_kpoints, ref_kpoints_automatic)
+
+
 @isolate_nexus_core
 def test_input(tmp_path):
     register_pseudo_files(
@@ -524,7 +794,7 @@ def test_input(tmp_path):
     atomic_species = AtomicSpecies(
         atoms   = ['Fe'],
         masses  = obj(Fe=58.69000),
-        pseudos = obj(Fe='Fe.pbe-nd-rrkjus.UPF'),
+        pseudos = obj(Fe=PseudoSet.pseudo_files['Fe.pbe-nd-rrkjus.UPF']),
     )
     atomic_positions = AtomicPositions(
         specifier = 'angstrom',
@@ -572,7 +842,7 @@ def test_input(tmp_path):
     atomic_species = AtomicSpecies(
         atoms   = ['Ar'],
         masses  = obj(Ar=39.948),
-        pseudos = obj(Ar='Ar.nexus-test.UPF'),
+        pseudos = obj(Ar=PseudoSet.pseudo_files['Ar.nexus-test.UPF']),
     )
     atomic_positions = AtomicPositions(
         specifier = 'crystal',
@@ -622,7 +892,7 @@ def test_input(tmp_path):
     atomic_species = AtomicSpecies(
         atoms   = ['H'],
         masses  = obj(H=1.00794),
-        pseudos = obj(H='H.nexus-test.UPF'),
+        pseudos = obj(H=PseudoSet.pseudo_files['H.nexus-test.UPF']),
     )
     atomic_positions = AtomicPositions(
         specifier        = 'angstrom',
@@ -672,7 +942,7 @@ def test_input(tmp_path):
     atomic_species = AtomicSpecies(
         atoms   = ['Ar'],
         masses  = obj(Ar=39.948),
-        pseudos = obj(Ar='Ar.nexus-test.UPF'),
+        pseudos = obj(Ar=PseudoSet.pseudo_files['Ar.nexus-test.UPF']),
     )
     atomic_positions = AtomicPositions(
         specifier = 'crystal',
@@ -724,8 +994,8 @@ def test_input(tmp_path):
         atoms   = ['Ce','Fe'],
         masses  = obj(Ce=140.116,Fe=55.845),
         pseudos = obj(
-            Ce = 'Ce.nexus-test.UPF',
-            Fe = 'Fe.nexus-test.UPF',
+            Ce = PseudoSet.pseudo_files['Ce.nexus-test.UPF'],
+            Fe = PseudoSet.pseudo_files['Fe.nexus-test.UPF'],
         ),
     )
     atomic_positions = AtomicPositions(
@@ -1146,7 +1416,6 @@ def test_input(tmp_path):
     pw.write(write_path)
     pw2 = PwscfInput(write_path)
     assert_pwscf_input_equals(pw2,reads[infile])
-#end def test_input
 
 
 @isolate_nexus_core
