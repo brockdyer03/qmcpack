@@ -1,5 +1,6 @@
 import re
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,14 +11,18 @@ from ..periodic_table import Elements
 from ..physical_system import generate_physical_system
 from ..pseudoset import PseudoSet
 from ..pwscf_input import (
+    AtomCoordConstraint,
     AtomicForces,
     AtomicPositions,
     AtomicSpecies,
+    AtomicVelocities,
+    BennettProjConstraint,
     CardBase,
     Cell,
     CellParameters,
     Constraints,
     Control,
+    DistanceConstraint,
     Electrons,
     Fcp,
     Hubbard,
@@ -30,9 +35,14 @@ from ..pwscf_input import (
     KPoints,
     NamelistBase,
     Occupations,
+    PlanarAngleConstraint,
+    PotentialWallConstraint,
     PwscfInput,
     Rism,
+    Solvents,
     System,
+    TorsionalAngleConstraint,
+    TypeCoordConstraint,
     generate_pwscf_input,
 )
 from ..pwscf_input_defs import SystemDefinitions
@@ -56,6 +66,9 @@ TEST_FILES = {
     "VO2_M1_afm.in":          TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.in",
     "VO2_M1_afm.xsf":         TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.xsf",
     "WSe2_band_structure.in": TEST_DIR / "test_pwscf_input_files/WSe2_band_structure.in",
+    "co2_constrained.in":     TEST_DIR / "test_pwscf_input_files/co2_constrained.in",
+    "furfural_pd_surface.in": TEST_DIR / "test_pwscf_input_files/furfural_pd_surface.in",
+    "h2o_nacl_rism.in":       TEST_DIR / "test_pwscf_input_files/h2o_nacl_rism.in",
     "README": TEST_DIR / "test_pwscf_input_files/README",
     "pseudos": (TEST_DIR / "../examples/qmcpack/pseudopotentials/").resolve(),
     }
@@ -133,17 +146,18 @@ def frozen_phys_sys(phys_sys):
 
 def assert_namelist_equals[T: NamelistBase](calc_nml: T, ref_nml: T) -> None:
     assert(type(calc_nml) is type(ref_nml))
+    assert(isinstance(calc_nml, NamelistBase))
     assert(calc_nml.params.keys() == ref_nml.params.keys())
     for key, value_1 in calc_nml.params.items():
         value_2 = ref_nml.params[key]
-        assert(type(value_1) is type(value_2))
         if isinstance(value_1, np.ndarray):
-            np.testing.assert_allclose(value_1, value_2)
+            np.testing.assert_allclose(value_1, value_2, err_msg=key)
         else:
-            assert(value_1 == value_2)
+            assert(value_1 == value_2), key
 
 def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
     assert(type(calc_card) is type(ref_card))
+    assert(isinstance(calc_card, CardBase))
     if isinstance(calc_card, AtomicSpecies) and isinstance(ref_card, AtomicSpecies):
         assert(calc_card.atoms == ref_card.atoms)
         assert(calc_card.masses == ref_card.masses)
@@ -201,16 +215,16 @@ def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
         assert(con1 == con2)
 
 def assert_pwscf_input_equals(calc_pwi: PwscfInput, ref_pwi: PwscfInput) -> None:
-    for nml in PwscfInput.namelists:
+    for nml in PwscfInput.namelist_types:
         assert(hasattr(calc_pwi, nml))
         assert(hasattr(ref_pwi, nml))
         calc_nml = getattr(calc_pwi, nml)
         ref_nml = getattr(ref_pwi, nml)
         assert(type(calc_nml) is type(ref_nml))
         if not (calc_nml is None and ref_nml is None):
-            assert_card_equals(calc_nml, ref_nml)
+            assert_namelist_equals(calc_nml, ref_nml)
 
-    for card in PwscfInput.cards:
+    for card in PwscfInput.card_types:
         assert(hasattr(calc_pwi, card))
         assert(hasattr(ref_pwi, card))
         calc_card = getattr(calc_pwi, card)
@@ -975,6 +989,798 @@ CELL_PARAMETERS (angstrom)
         match="Structure does not have axes!",
     ):
         CellParameters.from_phys_sys(s)
+
+
+def test_co2_constrained():
+    register_pseudo_files(["C.pz-n-rrkjus_psl.0.1.UPF", "O.pz-n-rrkjus_psl.0.1.UPF"])
+    control = Control(
+        calculation = "relax",
+        restart_mode = "from_scratch",
+        prefix = "CO2",
+        pseudo_dir = "./pseudo",
+        outdir = "./tmp_CO2",
+        tstress = True,
+    )
+    system = System(
+        ibrav = 1,
+        celldm = {1: 11},
+        nat = 3,
+        ntyp = 2,
+        ecutwfc = 40,
+        ecutrho = 320,
+        occupations = "smearing",
+        smearing = "mv",
+        degauss = 0.001,
+        nosym = True,
+    )
+    electrons = Electrons(
+        diagonalization = "david",
+        mixing_mode = "local-TF",
+        mixing_beta = 0.1,
+        conv_thr = 1e-06,
+        startingwfc = "random",
+    )
+    ions = Ions(
+        ion_dynamics = "damp",
+    )
+    atomic_species = AtomicSpecies(
+        atoms = ["C", "O"],
+        masses = {"C": 12.011, "O": 15.999},
+        pseudos = {
+            "C": PseudoSet.pseudo_files["C.pz-n-rrkjus_psl.0.1.UPF"],
+            "O": PseudoSet.pseudo_files["O.pz-n-rrkjus_psl.0.1.UPF"],
+        },
+        require_pseudos_exist = False,
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "angstrom",
+        atoms = ["C", "O", "O"],
+        positions = np.array(
+            [
+                [0.0, 0.0,  0.0     ],
+                [0.0, 0.0,  1.514076],
+                [0.0, 0.0, -1.514076],
+            ],
+        ),
+        force_multipliers = None,
+    )
+    k_points = KPoints(
+        specifier = "gamma",
+        kpoints = None,
+        weights = None,
+        grid = None,
+        shift = None,
+    )
+    constraints = Constraints(
+        constraints = [
+            DistanceConstraint(
+                atom_idx_1 = 1,
+                atom_idx_2 = 2,
+                constr_target = 3.1,
+            ),
+            DistanceConstraint(
+                atom_idx_1 = 1,
+                atom_idx_2 = 3,
+                constr_target = 2.8,
+            ),
+        ],
+        tolerance = None,
+    )
+    ref_pwscf_input = PwscfInput(
+        control=control,
+        system=system,
+        electrons=electrons,
+        ions=ions,
+        atomic_species=atomic_species,
+        atomic_positions=atomic_positions,
+        k_points=k_points,
+        constraints=constraints,
+    )
+
+    read_pwscf_input = PwscfInput(TEST_FILES["co2_constrained.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    gen_pwscf_input = generate_pwscf_input(
+        pseudos=["C.pz-n-rrkjus_psl.0.1.UPF", "O.pz-n-rrkjus_psl.0.1.UPF"],
+        prefix="CO2",
+        outdir="./tmp_CO2",
+        pseudo_dir="./pseudo",
+        restart_mode="from_scratch",
+        calculation="relax",
+        tstress=True,
+        ibrav=1,
+        celldm={1: 11.0},
+        ecutwfc=40,
+        ecutrho=320,
+        occupations="smearing",
+        smearing="mv",
+        degauss=0.001,
+        nosym=True,
+        diagonalization="david",
+        mixing_mode="local-TF",
+        mixing_beta=0.1,
+        conv_thr=1e-6,
+        startingwfc="random",
+        ion_dynamics="damp",
+        atoms=["C", "O", "O"],
+        pos=np.array(
+            [
+                [0.0000000, 0.0000000,  0.0000000],
+                [0.0000000, 0.0000000,  1.5140760],
+                [0.0000000, 0.0000000, -1.5140760],
+            ],
+        ),
+        at_pos_specifier="angstrom",
+        kpts_specifier="gamma",
+        constraints_card=Constraints(
+            constraints=[
+                DistanceConstraint(1, 2, 3.1),
+                DistanceConstraint(1, 3, 2.8),
+            ]
+        ),
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
+
+
+def test_furfural_pd_surface():
+    register_pseudo_files(
+        [
+            "Pd.pbe-n-kjpaw_psl.1.0.0.UPF.txt",
+            "C.pbe-n-kjpaw_psl.1.0.0.UPF.txt",
+            "O.pbe-n-kjpaw_psl.1.0.0.UPF.txt",
+            "H.pbe-kjpaw_psl.1.0.0.UPF.txt"
+        ]
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "angstrom",
+        atoms = [
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "C",
+            "C",
+            "C",
+            "O",
+            "C",
+            "H",
+            "H",
+            "H",
+            "C",
+            "O",
+            "H",
+            "H",
+            "H",
+        ],
+        positions = np.array(
+            [
+                [ 1.3864322 ,  0.80045774, 21.80931399],
+                [ 4.15923535,  0.80046709, 21.80929567],
+                [ 6.93195165,  0.80046709, 21.80929567],
+                [ 9.7047548 ,  0.80045774, 21.80931399],
+                [ 0.        ,  3.20178607, 21.80930232],
+                [ 2.77284237,  3.2017704 , 21.80929567],
+                [ 5.545594  ,  3.20175   , 21.80928326],
+                [ 8.31834563,  3.2017704 , 21.80929567],
+                [-1.38640709,  5.60305775, 21.80929635],
+                [ 1.38640709,  5.60305775, 21.80929635],
+                [ 4.15920002,  5.60301351, 21.80929567],
+                [ 6.93198698,  5.60301351, 21.80929567],
+                [-2.77276576,  8.00435697, 21.80930232],
+                [-0.        ,  8.00438549, 21.80929635],
+                [ 2.77276576,  8.00435697, 21.80930232],
+                [ 5.545594  ,  8.00433551, 21.80931399],
+                [-0.        ,  1.60089499, 19.52685728],
+                [ 2.7728343 ,  1.60089653, 19.52682511],
+                [ 5.545594  ,  1.60089679, 19.52679652],
+                [ 8.3183537 ,  1.60089653, 19.52682511],
+                [-1.38642051,  4.00219831, 19.52682283],
+                [ 1.38642051,  4.00219831, 19.52682283],
+                [ 4.15921387,  4.0021771 , 19.52679652],
+                [ 6.93197313,  4.0021771 , 19.52679652],
+                [-2.77279932,  6.40347535, 19.52682283],
+                [-0.        ,  6.4035    , 19.52682489],
+                [ 2.77279932,  6.40347535, 19.52682283],
+                [ 5.545594  ,  6.40345693, 19.52682511],
+                [-4.15917769,  8.80480301, 19.52685728],
+                [-1.38637781,  8.80482733, 19.52682283],
+                [ 1.38637781,  8.80482733, 19.52682283],
+                [ 4.15917769,  8.80480301, 19.52685728],
+                [ 0.        ,  0.        , 17.263979  ],
+                [ 5.545594  ,  0.        , 17.263979  ],
+                [ 8.318391  ,  0.        , 17.263979  ],
+                [-1.386398  ,  2.401313  , 17.263979  ],
+                [ 1.386398  ,  2.401313  , 17.263979  ],
+                [ 4.159195  ,  2.401313  , 17.263979  ],
+                [ 6.931992  ,  2.401313  , 17.263979  ],
+                [-2.772797  ,  4.802625  , 17.263979  ],
+                [ 0.        ,  4.802625  , 17.263979  ],
+                [ 2.772797  ,  4.802625  , 17.263979  ],
+                [ 5.545594  ,  4.802625  , 17.263979  ],
+                [-4.159195  ,  7.203938  , 17.263979  ],
+                [-1.386398  ,  7.203938  , 17.263979  ],
+                [ 1.386398  ,  7.203938  , 17.263979  ],
+                [ 4.159195  ,  7.203938  , 17.263979  ],
+                [-2.772797  ,  9.60525   , 17.263979  ],
+                [ 1.386398  ,  0.800438  , 15.        ],
+                [ 4.159195  ,  0.800438  , 15.        ],
+                [ 6.931992  ,  0.800438  , 15.        ],
+                [ 9.704789  ,  0.800438  , 15.        ],
+                [ 0.        ,  3.20175   , 15.        ],
+                [ 2.772797  ,  3.20175   , 15.        ],
+                [ 5.545594  ,  3.20175   , 15.        ],
+                [ 8.318391  ,  3.20175   , 15.        ],
+                [-1.386398  ,  5.603063  , 15.        ],
+                [ 1.386398  ,  5.603063  , 15.        ],
+                [ 4.159195  ,  5.603063  , 15.        ],
+                [ 6.931992  ,  5.603063  , 15.        ],
+                [-2.772797  ,  8.004375  , 15.        ],
+                [ 0.        ,  8.004375  , 15.        ],
+                [ 2.772797  ,  8.004375  , 15.        ],
+                [ 5.545594  ,  8.004375  , 15.        ],
+                [ 2.56958127,  4.2620151 , 23.9110437 ],
+                [ 1.91669314,  2.9921421 , 23.88867611],
+                [ 0.48123209,  3.26164125, 23.90244359],
+                [ 0.30334168,  4.61799222, 24.26578304],
+                [ 1.5136284 ,  5.2537245 , 23.9703527 ],
+                [ 3.59666269,  4.46019682, 24.20900172],
+                [ 2.34549165,  2.04554165, 24.21547897],
+                [-0.23585293,  2.60806547, 24.40282683],
+                [ 1.57044743,  6.69520364, 24.14824088],
+                [ 2.63368832,  7.37533837, 24.05260382],
+                [ 0.60578387,  7.16866191, 24.4345088 ],
+                [ 3.87682585,  7.04725423, 23.49855519],
+                [ 5.66405619,  4.66869667, 22.67603584],
+            ],
+        ),
+        force_multipliers = None,
+    )
+    atomic_species = AtomicSpecies(
+        atoms = [
+            "Pd",
+            "C",
+            "O",
+            "H",
+        ],
+        masses = {"Pd": 106.42, "C": 12.011, "O": 15.999, "H": 1.0079},
+        pseudos = {
+            "Pd": PseudoSet.pseudo_files["Pd.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "C": PseudoSet.pseudo_files["C.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "O": PseudoSet.pseudo_files["O.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "H": PseudoSet.pseudo_files["H.pbe-kjpaw_psl.1.0.0.UPF.txt"],
+        },
+    )
+    cell = Cell(
+        cell_dofree = "ibrav",
+    )
+    constraints = Constraints(
+        constraints = [
+            DistanceConstraint(
+                atom_idx_1 = 74,
+                atom_idx_2 = 76,
+                constr_target = 1.4,
+            ),
+        ],
+        tolerance = None,
+    )
+    control = Control(
+        prefix = "pwscf",
+        outdir = "pwscf_output",
+        calculation = "relax",
+        forc_conv_thr = 0.001,
+        etot_conv_thr = 0.001,
+        max_seconds = 13000000,
+        nstep = 200,
+        tprnfor = True,
+        tstress = True,
+        pseudo_dir = "/home/levin-rojas/pseudopot",
+    )
+    electrons = Electrons(
+        conv_thr = 1e-06,
+        electron_maxstep = 300,
+        mixing_beta = 0.7,
+        mixing_mode = "local-TF",
+        startingpot = "atomic",
+        startingwfc = "atomic+random",
+    )
+    ions = Ions(
+        ion_dynamics = "damp",
+    )
+    k_points = KPoints(
+        specifier = "automatic",
+        kpoints = None,
+        weights = None,
+        grid = np.array([3, 3, 1]),
+        shift = np.array([0, 0, 0]),
+    )
+    system = System(
+        a = 11.0912,
+        c = 37.1834,
+        ecutrho = 448,
+        ecutwfc = 36,
+        ibrav = 4,
+        nat = 77,
+        nspin = 2,
+        ntyp = 4,
+        degauss = 0.04,
+        occupations = "smearing",
+        smearing = "marzari-vanderbilt",
+        starting_magnetization = {1: 0.2},
+    )
+
+    ref_pwscf_input = PwscfInput(
+        atomic_positions=atomic_positions,
+        atomic_species=atomic_species,
+        cell=cell,
+        constraints=constraints,
+        control=control,
+        electrons=electrons,
+        ions=ions,
+        k_points=k_points,
+        system=system,
+    )
+
+    read_pwscf_input = PwscfInput(TEST_FILES["furfural_pd_surface.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    pseudos = PseudoSet(
+        pseudos={
+            "Pd": PseudoSet.pseudo_files["Pd.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "C": PseudoSet.pseudo_files["C.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "O": PseudoSet.pseudo_files["O.pbe-n-kjpaw_psl.1.0.0.UPF.txt"],
+            "H": PseudoSet.pseudo_files["H.pbe-kjpaw_psl.1.0.0.UPF.txt"],
+        },
+        codes="espresso",
+    )
+
+    gen_pwscf_input = generate_pwscf_input(
+        calculation = "relax",
+        pseudo_dir = "/home/levin-rojas/pseudopot",
+        pseudos = pseudos,
+        forc_conv_thr = 0.001,
+        etot_conv_thr = 0.001,
+        max_seconds = 13000000,
+        nstep = 200,
+        tprnfor = True,
+        tstress = True,
+        cell_dofree = "ibrav",
+        ion_dynamics = "damp",
+        a = 11.0912,
+        c = 37.1834,
+        ecutrho = 448,
+        ecutwfc = 36,
+        ibrav = 4,
+        nat = 77,
+        nspin = 2,
+        ntyp = 4,
+        degauss = 0.04,
+        occupations = "smearing",
+        smearing = "marzari-vanderbilt",
+        starting_magnetization = {1: 0.2},
+        conv_thr = 1e-06,
+        electron_maxstep = 300,
+        mixing_beta = 0.7,
+        mixing_mode = "local-TF",
+        startingpot = "atomic",
+        startingwfc = "atomic+random",
+        kpts_specifier = "automatic",
+        kgrid = (3, 3, 1),
+        kshift = (0, 0, 0),
+        constraints_card = Constraints(
+            constraints = [
+                DistanceConstraint(
+                    atom_idx_1 = 74,
+                    atom_idx_2 = 76,
+                    constr_target = 1.4,
+                ),
+            ],
+            tolerance = None,
+        ),
+        atoms = [
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "Pd",
+            "C",
+            "C",
+            "C",
+            "O",
+            "C",
+            "H",
+            "H",
+            "H",
+            "C",
+            "O",
+            "H",
+            "H",
+            "H",
+        ],
+        positions = np.array(
+            [
+                [ 1.3864322 ,  0.80045774, 21.80931399],
+                [ 4.15923535,  0.80046709, 21.80929567],
+                [ 6.93195165,  0.80046709, 21.80929567],
+                [ 9.7047548 ,  0.80045774, 21.80931399],
+                [ 0.        ,  3.20178607, 21.80930232],
+                [ 2.77284237,  3.2017704 , 21.80929567],
+                [ 5.545594  ,  3.20175   , 21.80928326],
+                [ 8.31834563,  3.2017704 , 21.80929567],
+                [-1.38640709,  5.60305775, 21.80929635],
+                [ 1.38640709,  5.60305775, 21.80929635],
+                [ 4.15920002,  5.60301351, 21.80929567],
+                [ 6.93198698,  5.60301351, 21.80929567],
+                [-2.77276576,  8.00435697, 21.80930232],
+                [-0.        ,  8.00438549, 21.80929635],
+                [ 2.77276576,  8.00435697, 21.80930232],
+                [ 5.545594  ,  8.00433551, 21.80931399],
+                [-0.        ,  1.60089499, 19.52685728],
+                [ 2.7728343 ,  1.60089653, 19.52682511],
+                [ 5.545594  ,  1.60089679, 19.52679652],
+                [ 8.3183537 ,  1.60089653, 19.52682511],
+                [-1.38642051,  4.00219831, 19.52682283],
+                [ 1.38642051,  4.00219831, 19.52682283],
+                [ 4.15921387,  4.0021771 , 19.52679652],
+                [ 6.93197313,  4.0021771 , 19.52679652],
+                [-2.77279932,  6.40347535, 19.52682283],
+                [-0.        ,  6.4035    , 19.52682489],
+                [ 2.77279932,  6.40347535, 19.52682283],
+                [ 5.545594  ,  6.40345693, 19.52682511],
+                [-4.15917769,  8.80480301, 19.52685728],
+                [-1.38637781,  8.80482733, 19.52682283],
+                [ 1.38637781,  8.80482733, 19.52682283],
+                [ 4.15917769,  8.80480301, 19.52685728],
+                [ 0.        ,  0.        , 17.263979  ],
+                [ 5.545594  ,  0.        , 17.263979  ],
+                [ 8.318391  ,  0.        , 17.263979  ],
+                [-1.386398  ,  2.401313  , 17.263979  ],
+                [ 1.386398  ,  2.401313  , 17.263979  ],
+                [ 4.159195  ,  2.401313  , 17.263979  ],
+                [ 6.931992  ,  2.401313  , 17.263979  ],
+                [-2.772797  ,  4.802625  , 17.263979  ],
+                [ 0.        ,  4.802625  , 17.263979  ],
+                [ 2.772797  ,  4.802625  , 17.263979  ],
+                [ 5.545594  ,  4.802625  , 17.263979  ],
+                [-4.159195  ,  7.203938  , 17.263979  ],
+                [-1.386398  ,  7.203938  , 17.263979  ],
+                [ 1.386398  ,  7.203938  , 17.263979  ],
+                [ 4.159195  ,  7.203938  , 17.263979  ],
+                [-2.772797  ,  9.60525   , 17.263979  ],
+                [ 1.386398  ,  0.800438  , 15.        ],
+                [ 4.159195  ,  0.800438  , 15.        ],
+                [ 6.931992  ,  0.800438  , 15.        ],
+                [ 9.704789  ,  0.800438  , 15.        ],
+                [ 0.        ,  3.20175   , 15.        ],
+                [ 2.772797  ,  3.20175   , 15.        ],
+                [ 5.545594  ,  3.20175   , 15.        ],
+                [ 8.318391  ,  3.20175   , 15.        ],
+                [-1.386398  ,  5.603063  , 15.        ],
+                [ 1.386398  ,  5.603063  , 15.        ],
+                [ 4.159195  ,  5.603063  , 15.        ],
+                [ 6.931992  ,  5.603063  , 15.        ],
+                [-2.772797  ,  8.004375  , 15.        ],
+                [ 0.        ,  8.004375  , 15.        ],
+                [ 2.772797  ,  8.004375  , 15.        ],
+                [ 5.545594  ,  8.004375  , 15.        ],
+                [ 2.56958127,  4.2620151 , 23.9110437 ],
+                [ 1.91669314,  2.9921421 , 23.88867611],
+                [ 0.48123209,  3.26164125, 23.90244359],
+                [ 0.30334168,  4.61799222, 24.26578304],
+                [ 1.5136284 ,  5.2537245 , 23.9703527 ],
+                [ 3.59666269,  4.46019682, 24.20900172],
+                [ 2.34549165,  2.04554165, 24.21547897],
+                [-0.23585293,  2.60806547, 24.40282683],
+                [ 1.57044743,  6.69520364, 24.14824088],
+                [ 2.63368832,  7.37533837, 24.05260382],
+                [ 0.60578387,  7.16866191, 24.4345088 ],
+                [ 3.87682585,  7.04725423, 23.49855519],
+                [ 5.66405619,  4.66869667, 22.67603584],
+            ],
+        ),
+        masses = {"Pd": 106.42, "C": 12.011, "O": 15.999, "H": 1.0079},
+        elem_order = ["Pd", "C", "O", "H"],
+        at_pos_specifier = "angstrom",
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
+
+
+def test_h2o_nacl_rism():
+    register_pseudo_files(
+        ["O.pbe-n-rrkjus_psl.1.0.0.UPF", "H.pbe-rrkjus_psl.1.0.0.UPF"]
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "angstrom",
+        atoms = ["O", "H", "H"],
+        positions = np.array(
+            [
+                [10.00000, 10.00000, 10.00000],
+                [10.81649, 10.57736, 10.00000],
+                [ 9.18351, 10.57736, 10.00000],
+            ],
+            dtype=float,
+        ),
+        force_multipliers = None,
+    )
+    atomic_species = AtomicSpecies(
+        atoms = ["O", "H"],
+        masses = {"O": -1.0, "H": -1.0},
+        pseudos = {
+            "O": PseudoSet.pseudo_files["O.pbe-n-rrkjus_psl.1.0.0.UPF"],
+            "H": PseudoSet.pseudo_files["H.pbe-rrkjus_psl.1.0.0.UPF"],
+        },
+    )
+    control = Control(
+        calculation = "relax",
+        prefix = "H2O.NaCl_aq.1mol",
+        pseudo_dir = "./pseudo",
+        outdir = "./output",
+        trism = True,
+        nstep = 100,
+    )
+    electrons = Electrons(
+        electron_maxstep = 200,
+    )
+    ions = Ions(
+        ion_dynamics = "bfgs",
+    )
+    k_points = KPoints(
+        specifier = "gamma",
+        kpoints = None,
+        weights = None,
+        grid = None,
+        shift = None,
+    )
+    rism = Rism(
+        nsolv = 3,
+        closure = "kh",
+        tempv = 300,
+        ecutsolv = 160,
+        solute_lj = {1: "none"},
+        solute_epsilon = {1: 0.1554, 2: 0.046},
+        solute_sigma = {1: 3.166, 2: 1},
+        starting1d = "zero",
+        rism1d_conv_thr = 1e-08,
+        rism1d_maxstep = 10000,
+        mdiis1d_size = 20,
+        mdiis1d_step = 0.5,
+        starting3d = "zero",
+        rism3d_maxstep = 10000,
+        rism3d_conv_thr = 1e-06,
+    )
+    solvents = Solvents(
+        specifier = "mol/l",
+        labels = [
+            "H2O",
+            "Na+",
+            "Cl-",
+        ],
+        mol_files = [
+            Path("H2O.spc.MOL"),
+            Path("Na+.aq.MOL"),
+            Path("Cl-.aq.MOL"),
+        ],
+        densities = [-1.0, 1.0, 1.0],
+        densities_left = None,
+        densities_right = None,
+    )
+    system = System(
+        ibrav = 1,
+        a = 20,
+        ntyp = 2,
+        nat = 3,
+        ecutwfc = 40,
+        ecutrho = 320,
+        nbnd = 8,
+        occupations = "smearing",
+        smearing = "gauss",
+        degauss = 0.01,
+    )
+    ref_pwscf_input = PwscfInput(
+        atomic_positions=atomic_positions,
+        atomic_species=atomic_species,
+        control=control,
+        electrons=electrons,
+        ions=ions,
+        k_points=k_points,
+        rism=rism,
+        solvents=solvents,
+        system=system,
+    )
+
+    read_pwscf_input = PwscfInput(filepath=TEST_FILES["h2o_nacl_rism.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    pseudos = PseudoSet(
+        pseudos = {
+            "O": PseudoSet.pseudo_files["O.pbe-n-rrkjus_psl.1.0.0.UPF"],
+            "H": PseudoSet.pseudo_files["H.pbe-rrkjus_psl.1.0.0.UPF"],
+        },
+    )
+
+    gen_pwscf_input = generate_pwscf_input(
+        calculation = "relax",
+        prefix = "H2O.NaCl_aq.1mol",
+        pseudo_dir = "./pseudo",
+        outdir = "./output",
+        trism = True,
+        nstep = 100,
+        ibrav = 1,
+        a = 20,
+        ntyp = 2,
+        nat = 3,
+        ecutwfc = 40,
+        ecutrho = 320,
+        nbnd = 8,
+        occupations = "smearing",
+        smearing = "gauss",
+        degauss = 0.01,
+        electron_maxstep = 200,
+        ion_dynamics = "bfgs",
+        kpts_specifier = "gamma",
+        nsolv = 3,
+        closure = "kh",
+        tempv = 300,
+        ecutsolv = 160,
+        solute_lj = {1: "none"},
+        solute_epsilon = {1: 0.1554, 2: 0.046},
+        solute_sigma = {1: 3.166, 2: 1},
+        starting1d = "zero",
+        rism1d_conv_thr = 1e-08,
+        rism1d_maxstep = 10000,
+        mdiis1d_size = 20,
+        mdiis1d_step = 0.5,
+        starting3d = "zero",
+        rism3d_maxstep = 10000,
+        rism3d_conv_thr = 1e-06,
+        solvents_card = Solvents(
+            specifier = "mol/l",
+            labels = [
+                "H2O",
+                "Na+",
+                "Cl-",
+            ],
+            mol_files = [
+                Path("H2O.spc.MOL"),
+                Path("Na+.aq.MOL"),
+                Path("Cl-.aq.MOL"),
+            ],
+            densities = [-1.0, 1.0, 1.0],
+            densities_left = None,
+            densities_right = None,
+        ),
+        at_pos_specifier = "angstrom",
+        atoms = ["O", "H", "H"],
+        positions = np.array(
+            [
+                [10.00000, 10.00000, 10.00000],
+                [10.81649, 10.57736, 10.00000],
+                [ 9.18351, 10.57736, 10.00000],
+            ],
+            dtype=float,
+        ),
+        masses = {"O": -1.0, "H": -1.0},
+        pseudos = pseudos,
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
 
 
 @isolate_nexus_core

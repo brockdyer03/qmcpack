@@ -11,21 +11,11 @@ PwscfInput
 generate_pwscf_input
     User-facing function to create arbitrary input files.
 
-Element
-    Base class for two different types of PWSCF input sections:
-    namelists (Section class) and 'cards' (Card class)
+NamelistBase
+    Base class for PWSCF input namelists
 
-Section
-    Class representing keyword (namelist) input sections.
-    Base class for other keyword input section classes.
-    See control, system, electrons, ions, cell, phonon, and ee.
-
-Card
-    Class representing formatted (card) input sections.
-    Base class for other formatted section classes.
-    See atomic_species, atomic_positions, k_points,
-      cell_parameters, climbing_images, constraints,
-      collective_vars, occupations and hubbard.
+CardBase
+    Base class for PWSCF input cards.
 """
 from __future__ import annotations
 
@@ -118,6 +108,7 @@ type ConstraintName = Literal[
     "potential_wall",
 ]
 type CellParametersSpecifier = Literal["alat", "bohr", "angstrom"]
+type SolventsSpecifier = Literal["1/cell", "mol/l", "g/cm^3"]
 type HubbardSpecifier = Literal["atomic", "ortho-atomic", "norm-atomic", "wf", "pseudo"]
 type HubbardInteraction = Literal["U", "ALPHA", "J0", "J", "B", "E2", "E3", "V"]
 
@@ -492,6 +483,14 @@ class NamelistBase:
         else:
             return True, ""
 
+    def has_required(self) -> bool:
+        has_required = True
+        for param in self.namelist_def:
+            if param.required and param.name not in self.params:
+                has_required = False
+
+        return has_required
+
     def write(self) -> str:
         lines = []
         params = {
@@ -639,11 +638,11 @@ class NamelistBase:
         return self.params.items()
 
     def __repr__(self) -> str:
-        text = f"{self.name.upper()}(\n"
+        text = f"{type(self).__name__}(\n"
         for name, value in self.params.items():
             if isinstance(value, str):
                 value = f"'{value}'"
-            text += f"    {name}={value}\n"
+            text += f"    {name} = {value},\n"
         text += ")"
         return text
 
@@ -811,10 +810,24 @@ class CardBase(ABC):
 
     def __repr__(self) -> str:
         dct = vars(self)
-        align = max(map(len, dct.keys()))
         text = f"{type(self).__name__}(\n"
         for param, val in dct.items():
-            text += f"    {param:{align}} = {val!r},\n"
+            text += f"    {param} = "
+            if (
+                isinstance(val, Sequence)
+                and not isinstance(val, str)
+                and len(str(val)) > 20
+            ):
+                text += "[\n"
+                for v in val:
+                    text += indent(f"{v!r},\n", " " * 8)
+                text += "    ],\n"
+            elif isinstance(val, np.ndarray):
+                text += "np.array(\n"
+                text += indent(np.array2string(val, separator=", "), " " * 8) + ",\n"
+                text += "    ),\n"
+            else:
+                text += f"{val!r},\n"
         text += ")"
         return text
 
@@ -937,6 +950,7 @@ class AtomicSpecies(CardBase):
         pseudos: PseudoSet | dict[str, str] | list[str],
         *,
         elem_order: list[str] | None = None,
+        require_pseudos_exist: bool = True,
     ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             phys_sys = phys_sys.structure
@@ -946,7 +960,12 @@ class AtomicSpecies(CardBase):
             masses=None,
             pseudos=pseudos,
             elem_order=elem_order,
+            require_pseudos_exist=require_pseudos_exist,
         )
+
+    @property
+    def n_species(self) -> int:
+        return len(self.atoms)
 
 
 class AtomicPositions(CardBase):
@@ -1139,6 +1158,14 @@ class AtomicPositions(CardBase):
             specifier=specifier,
         )
 
+    @property
+    def n_atoms(self) -> int:
+        return len(self.atoms)
+
+    @property
+    def n_species(self) -> int:
+        return len(set(self.atoms))
+
 
 class AtomicForces(CardBase):
     """Atomic forces card in a :class:`PwscfInput` [1]_.
@@ -1163,6 +1190,12 @@ class AtomicForces(CardBase):
             msg = f"`forces` must have shape {(len(self.atoms), 3)} but has shape {shape}!"
             raise ValueError(msg)
 
+        if (net_force := self.forces.sum()) > 0:
+            warn(
+                f"Sum of external forces ({net_force:e}) is greater than zero! "
+                "The system's center of mass will not be stationary."
+            )
+
     @classmethod
     def read(cls, lines: list[str]) -> Self:
         n_forces = len(lines) - 1
@@ -1176,13 +1209,74 @@ class AtomicForces(CardBase):
         return cls(atoms=atoms, forces=forces)
 
     def write(self) -> str:
-        text = f"{self.name.upper()} {self.specifier}\n"
+        text = f"{self.name.upper()}\n"
         for atom, force in zip(self.atoms, self.forces, strict=True):
             text += "    {:2} {:{f}} {:{f}} {:{f}}\n".format(
                 atom, *force, f="16.8f",
             )
 
         return text
+
+    @property
+    def n_atoms(self) -> int:
+        return len(self.atoms)
+
+    @property
+    def n_species(self) -> int:
+        return len(set(self.atoms))
+
+
+class AtomicVelocities(CardBase):
+    """Atomic velocities card in a :class:`PwscfInput` [1]_.
+
+    References
+    ----------
+    .. [1] https://www.quantum-espresso.org/Doc/INPUT_PW.html#id311
+    """
+
+    name = "atomic_velocities"
+    atoms: list[str]
+    velocities: npt.NDArray[np.float64]
+
+    def __init__(self, atoms: list[str], velocities: npt.ArrayLike[np.floating]) -> None:
+        if not all(Elements.is_element(e) for e in atoms):
+            msg = "Not all atoms supplied are elements!"
+            raise NotAnElementError(msg)
+
+        self.atoms = atoms
+        self.velocities = np.asarray(velocities, dtype=float)
+        if (shape := self.velocities.shape) != (len(self.atoms), 3):
+            msg = f"`velocities` must have shape {(len(self.atoms), 3)} but has shape {shape}!"
+            raise ValueError(msg)
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        n_vel = len(lines) - 1
+        atoms = []
+        velocities = np.empty((n_vel, 3), dtype=float)
+        for idx, l in enumerate(lines):
+            tokens = l.split()
+            atoms.append(tokens[0])
+            velocities[idx, :] = tokens[1:4]
+
+        return cls(atoms=atoms, velocities=velocities)
+
+    def write(self) -> str:
+        text = f"{self.name.upper()}\n"
+        for atom, vel in zip(self.atoms, self.velocities, strict=True):
+            text += "    {:2} {:{f}} {:{f}} {:{f}}\n".format(
+                atom, *vel, f="16.8f",
+            )
+
+        return text
+
+    @property
+    def n_atoms(self) -> int:
+        return len(self.atoms)
+
+    @property
+    def n_species(self) -> int:
+        return len(set(self.atoms))
 
 
 class KPoints(CardBase):
@@ -1385,7 +1479,7 @@ class KPoints(CardBase):
         pwi: PwscfInput,
         *,
         in_place: bool = True,
-    ):
+    ) -> Self | None:
         if not in_place:
             cpy = deepcopy(self)
             cpy.change_specifier(new_specifier, pwi)
@@ -1632,19 +1726,29 @@ class Constraint(ABC):
 
         msg = ""
         for key, value in kwargs.items():
+            invalid = False
             dtype = types[key]
-            if dtype is int and value.is_integer():
+            if dtype == "int" and value.is_integer():
                 # Convert integer-value floats to ints
                 value = int(value)
-
-            dtype = int | np.integer if dtype is int else float | np.floating
-            if not isinstance(value, dtype):
+            if (
+                (
+                    dtype.startswith("int")
+                    and not isinstance(value, int | np.integer)
+                )
+                or (
+                    dtype.startswith("float")
+                    and not isinstance(value, float | np.floating)
+                )
+            ):
+                invalid = True
+            if invalid:
                 msg += (
-                    f"Input '{key}' should have type {dtype.__name__} "
-                    f"but has type {type(value).__name__}!"
+                    f"Input '{key}' should have type {dtype} "
+                    f"but has type {type(value).__name__}!\n"
                 )
 
-        return msg
+        return msg.rstrip()
 
     @abstractmethod
     def __init__(self, *args, **kwargs) -> None:
@@ -1654,6 +1758,13 @@ class Constraint(ABC):
     @abstractmethod
     def values(self) -> list[int | float]:
         ...
+
+    def __repr__(self) -> str:
+        text = f"{type(self).__name__}(\n"
+        for k, v in vars(self).items():
+            text += f"    {k} = {v!r},\n"
+        text += ")"
+        return text
 
 
 class TypeCoordConstraint(Constraint):
@@ -1685,8 +1796,8 @@ class TypeCoordConstraint(Constraint):
             if len(msg) > 0:
                 raise TypeError(msg)
 
-        self.atom_idx_1 = atom_idx_1
-        self.atom_idx_2 = atom_idx_2
+        self.atom_idx_1 = int(atom_idx_1)
+        self.atom_idx_2 = int(atom_idx_2)
         self.cutoff_radius = cutoff_radius
         self.smoothing = smoothing
         self.constr_target = constr_target
@@ -1732,8 +1843,8 @@ class DistanceConstraint(Constraint):
             if len(msg) > 0:
                 raise TypeError(msg)
 
-        self.atom_idx_1 = atom_idx_1
-        self.atom_idx_2 = atom_idx_2
+        self.atom_idx_1 = int(atom_idx_1)
+        self.atom_idx_2 = int(atom_idx_2)
         self.constr_target = constr_target
 
     @property
@@ -1774,9 +1885,9 @@ class PlanarAngleConstraint(Constraint):
             if len(msg) > 0:
                 raise TypeError(msg)
 
-        self.atom_idx_1 = atom_idx_1
-        self.atom_idx_2 = atom_idx_2
-        self.atom_idx_3 = atom_idx_3
+        self.atom_idx_1 = int(atom_idx_1)
+        self.atom_idx_2 = int(atom_idx_2)
+        self.atom_idx_3 = int(atom_idx_3)
         self.constr_target = constr_target
 
     @property
@@ -1821,10 +1932,10 @@ class TorsionalAngleConstraint(Constraint):
             if len(msg) > 0:
                 raise TypeError(msg)
 
-        self.atom_idx_1 = atom_idx_1
-        self.atom_idx_2 = atom_idx_2
-        self.atom_idx_3 = atom_idx_3
-        self.atom_idx_4 = atom_idx_4
+        self.atom_idx_1 = int(atom_idx_1)
+        self.atom_idx_2 = int(atom_idx_2)
+        self.atom_idx_3 = int(atom_idx_3)
+        self.atom_idx_4 = int(atom_idx_4)
         self.constr_target = constr_target
 
     @property
@@ -1868,7 +1979,7 @@ class BennettProjConstraint(Constraint):
             msg = f"'vector' must have shape (3,) but has shape {shape}!"
             raise ValueError(msg)
 
-        self.atom_idx = atom_idx
+        self.atom_idx = int(atom_idx)
         self.vector = vector
         self.constr_target = constr_target
 
@@ -1972,11 +2083,13 @@ class Constraints(CardBase):
         nconstraints = int(constr_info[0])
         if len(constr_info) > 1:
             tolerance = float(constr_info[1])
+        else:
+            tolerance = None
 
         constraints = []
         for line in lines[2:]:
-            tokens = line.split()
-            cons_name = tokens[0]
+            tokens = line.replace(",", " ").split()
+            cons_name = tokens[0].strip("'")
             if cons_name not in Constraints.constraint_map:
                 msg = (
                     f"Constraint {cons_name} is not known to Nexus!\n"
@@ -1984,7 +2097,7 @@ class Constraints(CardBase):
                 )
                 raise ValueError(msg)
             cons_type = Constraints.constraint_map[cons_name]
-            cons_params = np.array(tokens[1:], dtype=np.float64)
+            cons_params = tuple(float(i) for i in tokens[1:])
             constraints.append(
                 cons_type(*cons_params)
             )
@@ -2003,10 +2116,11 @@ class Constraints(CardBase):
         text = f"{self.name.upper()}\n"
         text += f"  {self.nconstraints}"
         if self.tolerance is not None:
-            text += f"  {self.tolerance:.8f}\n"
+            text += f"  {self.tolerance:.8f}"
+        text += "\n"
 
         for cons in self.constraints:
-            text += f"    {cons.name:15}"
+            text += f"    {f"'{cons.name}'":15}"
             for val in cons.values:
                 fmt = "4d" if isinstance(val, int | np.integer) else "12.8f"
                 text += f" {val:{fmt}}"
@@ -2101,6 +2215,162 @@ class Occupations(CardBase):
 
         return text
     #end def write
+
+
+class Solvents(CardBase):
+    """Solvents card in a :class:`PwscfInput` [1]_.
+
+    References
+    ----------
+    .. [1] https://www.quantum-espresso.org/Doc/INPUT_PW.html#id321
+    """
+
+    name = "solvents"
+    valid_specifiers: frozenset[SolventsSpecifier] = frozenset(
+        {"1/cell", "mol/l", "g/cm^3"}
+    )
+
+    specifier: SolventsSpecifier
+    labels: list[str]
+    densities: list[float] | None
+    densities_left: list[float] | None
+    densities_right: list[float] | None
+    mol_files: list[Path]
+
+    def __init__(
+        self,
+        specifier: SolventsSpecifier,
+        labels: list[str],
+        mol_files: list[PathLike],
+        densities: list[float] | None = None,
+        densities_left: list[float] | None = None,
+        densities_right: list[float] | None = None,
+    ):
+        s_low = specifier.lower()
+        if s_low not in Solvents.valid_specifiers:
+            msg = (
+                f"Specifier '{specifier}' is not known to Nexus!\n"
+                f"Valid specifiers are {sorted(Solvents.valid_specifiers)}"
+            )
+            raise ValueError(msg)
+        self.specifier = s_low
+
+        self.labels = list(labels)
+        n_labels = len(self.labels)
+        if len(mol_files) != n_labels:
+            msg = (
+                "Number of MOL files does not equal the number of labels!\n"
+                f"# Labels: {n_labels}\n"
+                f"# Files:  {len(mol_files)}"
+            )
+            raise ValueError(msg)
+        self.mol_files = [Path(i) for i in mol_files]
+
+        self.densities = None
+        self.densities_left = None
+        self.densities_right = None
+        if densities is not None:
+            if not (densities_left is None and densities_right is None):
+                msg = (
+                    "Can not pass `densities_left` and/or `densities_right` if you pass `densities`!"
+                )
+                raise ValueError(msg)
+            elif len(densities) != n_labels:
+                msg = (
+                    "Number of densities does not equal the number of labels!\n"
+                    f"# Labels:    {n_labels}\n"
+                    f"# Densities: {len(densities)}"
+                )
+                raise ValueError(msg)
+            self.densities = [float(i) for i in densities]
+        elif densities_left is not None and densities_right is not None:
+            if len(densities_right) != n_labels or len(densities_left) != n_labels:
+                msg = (
+                    "Number of left/right densities does not equal the number of labels!\n"
+                    f"# Labels:        {n_labels}\n"
+                    f"# Densities (L): {len(densities_left)}\n"
+                    f"# Densities (R): {len(densities_right)}"
+                )
+                raise ValueError(msg)
+            self.densities_left = [float(i) for i in densities_left]
+            self.densities_right = [float(i) for i in densities_right]
+        else:
+            msg = "Must pass either `densities` or `densities_left` and `densities_right`!"
+            raise ValueError(msg)
+
+    @classmethod
+    def read(cls, lines: list[str]) -> Self:
+        specifier = lines[0].split()[1].strip("{}()").lower()
+        labels = []
+        dens = [] # Either only density or left density
+        dens_right = []
+        mol_files = []
+        for line in lines[1:]:
+            tokens = line.split()
+            labels.append(tokens[0])
+            dens.append(float(tokens[1]))
+            if len(tokens) == 4:
+                dens_right.append(float(tokens[2]))
+                mol_files.append(tokens[3])
+            else:
+                mol_files.append(tokens[2])
+
+        if len(dens_right) == 0:
+            return cls(
+                specifier=specifier,
+                labels=labels,
+                mol_files=mol_files,
+                densities=dens,
+            )
+        elif len(dens) == len(dens_right):
+            return cls(
+                specifier=specifier,
+                labels=labels,
+                mol_files=mol_files,
+                densities=None,
+                densities_left=dens,
+                densities_right=dens_right,
+            )
+        else:
+            msg = (
+                "Mismatch between number of left-side and right-side densities!\n"
+                f"# Left Densities:  {len(dens)}\n"
+                f"# Right Densities: {len(dens_right)}"
+            )
+            raise FileFormatError(msg)
+
+    def write(self) -> str:
+        text = f"{self.name.upper()} ({self.specifier})\n"
+        lfmt = max(map(len, self.labels))
+        if self.densities is not None:
+            for lbl, dens, file in zip(
+                self.labels, self.densities, self.mol_files, strict=True
+            ):
+                text += f"    {lbl:<{lfmt}} {dens:8} {file.name}\n"
+        else:
+            for lbl, ldens, rdens, file in zip(
+                self.labels,
+                self.densities_left,
+                self.densities_right,
+                self.mol_files,
+                strict=True,
+            ):
+                text += f"    {lbl:<{lfmt}} {ldens:.4f} {rdens:.4f} {file.name}\n"
+
+        return text
+
+    def change_specifier(
+        self,
+        new_specifier: SolventsSpecifier,
+        pwi: PwscfInput,
+        *,
+        in_place: bool = True,
+    ) -> Self | None:
+        msg = (
+            "Specifier change for SOLVENTS card is not implemented!\n"
+            "Implementation requires parsing of MOL files, which is not available."
+        )
+        raise NotImplementedError(msg)
 
 
 class HubbardParam(ABC):
@@ -3218,7 +3488,7 @@ class Hubbard(CardBase):
         return sorted_params
 
     @classmethod
-    def from_dict(
+    def from_mapping(
         cls,
         inputs: Mapping[HubbardInteraction, Mapping],
         specifier: HubbardSpecifier,
@@ -3288,7 +3558,7 @@ class Hubbard(CardBase):
 
         """
         inputs = {k.upper(): v for k, v in inputs.items()}
-        hubbard_params: list[HubbardParam] = []
+        hubbard_params = []
         for itype, values in inputs.items():
             if itype == "U":
                 hubbard_params.extend(HubbardU.from_mapping(values))
@@ -3308,6 +3578,15 @@ class Hubbard(CardBase):
                 raise ValueError(msg)
         return cls(specifier, hubbard_params)
 
+    @property
+    def species(self) -> set[str]:
+        species = set()
+        for param in self.hubbard_params:
+            if isinstance(param, HubbardV):
+                species.update({param.label_1, param.label_2})
+            else:
+                species.add(param.label)
+        return species
 
     def __repr__(self) -> str:
         text = f"{type(self).__name__}(\n"
@@ -3381,35 +3660,36 @@ class PwscfInputParser:
         self.decimal = decimal
         self.delim = delim
         self.patterns = {
-            "number": re.compile(PwscfInputParser.num_patterns[decimal]),
+            "number": re.compile(PwscfInputParser.num_patterns[decimal], flags=re.IGNORECASE),
             # e.g. `.true.` or `.false.`, the `?i:` makes it case-insensitive
-            "bool": re.compile(r"(?i:(?:\.true\.|\.false\.|\.?[tTfF]))"),
-            "complex": re.compile(PwscfInputParser.complex_patterns[decimal]),
-            "string": re.compile(string_pat),
+            "bool": re.compile(r"(?i:(?:\.true\.|\.false\.|\.?[tTfF]))", flags=re.IGNORECASE),
+            "complex": re.compile(PwscfInputParser.complex_patterns[decimal], flags=re.IGNORECASE),
+            "string": re.compile(string_pat, flags=re.IGNORECASE),
             # Use `a-zA-Z` over `\w` beause it can't start with an underscore
-            "namelist": re.compile(r"^&[a-zA-Z$][\w$]*"),
+            "namelist": re.compile(r"^&[a-zA-Z$][\w$]*", flags=re.IGNORECASE),
         }
 
     def read_text(self, text: str) -> dict:
         text = re.sub(r"!.*?\n", "\n", text) # Remove all comments
-        # Move multiple variables on the same line separated by a comma
-        # onto separate lines
-        text = re.sub(r",([^0-9\n])", r",\n\1", text)
-        nmlist_lines: list[str] = []
-        card_lines:   list[str] = []
+        nmlist_lines = ""
+        card_lines = ""
         at_cards = False
-        for line in text.splitlines():
-            line = line.strip()
-            if line.lower().startswith(PwscfInput.cards) and "=" not in line:
+        for line in text.splitlines(keepends=True):
+            line = line.lstrip()
+            if line.lower().startswith(tuple(PwscfInput.card_types)) and "=" not in line:
                 at_cards = True
 
             if not at_cards:
-                nmlist_lines.append(line)
+                nmlist_lines += line
             else:
-                card_lines.append(line)
+                card_lines += line
         current_group = None
         groups = {}
-        for line in nmlist_lines:
+
+        # Move multiple variables on the same line separated by a comma
+        # onto separate lines
+        nmlist_lines = re.sub(r",([^0-9\n])", r",\n\1", nmlist_lines)
+        for line in nmlist_lines.splitlines():
             if line.strip() == "":
                 continue
             if (nmlist_match := re.search(self.patterns["namelist"], line)) is not None:
@@ -3417,7 +3697,10 @@ class PwscfInputParser:
                     msg = "Encountered new namelist before termination of previous namelist!\n"
                     raise FileFormatError(msg)
                 current_group = nmlist_match.group()
-                if (nmlist := current_group.removeprefix("&").lower()) in PwscfInput.namelists:
+                if (
+                    (nmlist := current_group.removeprefix("&").lower())
+                    in PwscfInput.namelist_types
+                ):
                     groups[nmlist] = {}
                     current_group = nmlist
                     continue
@@ -3453,10 +3736,10 @@ class PwscfInputParser:
 
         cards = {}
         current_card = None
-        for line in card_lines:
+        for line in card_lines.splitlines():
             line = line.strip()
-            if line.lower().startswith(PwscfInput.cards):
-                current_card = line.lower().split()[0].split("(")[0].split("{")[0]
+            if line.lower().startswith(tuple(PwscfInput.card_types)):
+                current_card = line.lower().split()[0]#.split("(")[0].split("{")[0]
                 if current_card in cards:
                     msg = f"Encountered duplicate instance of '{current_card.title()}' card!"
                     raise FileFormatError(msg)
@@ -3471,7 +3754,7 @@ class PwscfInputParser:
         return groups
 
     def _parse_value(self, val_str: str) -> str | bool | int | float | complex:
-        val_str = val_str.strip(", \n").lower()
+        val_str = val_str.strip(", \n")
         for dtype, pattern in self.patterns.items():
             value = re.match(pattern, val_str)
             if value is None:
@@ -3480,7 +3763,7 @@ class PwscfInputParser:
                 value = value.group()
 
             if dtype == "number":
-                value = float(value.replace("d", "e"))
+                value = float(value.lower().replace("d", "e"))
                 if value.is_integer():
                     return int(value)
                 else:
@@ -3519,15 +3802,16 @@ class PwscfInput(SimulationInput):
     atomic_species: AtomicSpecies
     atomic_positions: AtomicPositions
     k_points: KPoints
+    # additional_k_points: AdditionalKPoints | None
     cell_parameters: CellParameters | None
     occupations: Occupations | None
     constraints: Constraints | None
-    # atomic_velocities: AtomicVelocities | None
+    atomic_velocities: AtomicVelocities | None
     atomic_forces: AtomicForces | None
-    # solvents: Solvents | None
+    solvents: Solvents | None
     hubbard: Hubbard | None
 
-    namelist_types: ClassVar = MappingProxyType(
+    namelist_types: MappingProxyType[NamelistName, NamelistBase] = MappingProxyType(
         {
             "control":   Control,
             "system":    System,
@@ -3538,29 +3822,28 @@ class PwscfInput(SimulationInput):
             "rism":      Rism,
         }
     )
-    namelists: ClassVar[tuple[NamelistName]] = tuple(namelist_types.keys())
 
-    card_types: ClassVar = MappingProxyType(
+    card_types: MappingProxyType[CardName, CardBase] = MappingProxyType(
         {
-            "atomic_species":   AtomicSpecies,
-            "atomic_positions": AtomicPositions,
-            "k_points":         KPoints,
-            "cell_parameters":  CellParameters,
-            "occupations":      Occupations,
-            "constraints":      Constraints,
-            "atomic_forces":    AtomicForces,
-            "hubbard":          Hubbard,
+            "atomic_species":      AtomicSpecies,
+            "atomic_positions":    AtomicPositions,
+            "k_points":            KPoints,
+            # "additional_k_points": AdditionalKPoints,
+            "cell_parameters":     CellParameters,
+            "constraints":         Constraints,
+            "occupations":         Occupations,
+            "atomic_velocities":   AtomicVelocities,
+            "atomic_forces":       AtomicForces,
+            "solvents":            Solvents,
+            "hubbard":             Hubbard,
         }
     )
-    cards: ClassVar[tuple[CardName]] = tuple(card_types)
-    ordered_elements: ClassVar = namelists + cards
+    ordered_elements: ClassVar = (*namelist_types, *card_types)
 
     creatable_from_phys_sys = frozenset(
         {"atomic_species", "atomic_positions", "k_points", "cell_parameters"}
     )
-    nmlists_allowed_empty = frozenset(
-        {"electrons", "ions"}
-    )
+    nmlists_allowed_empty = frozenset({"control", "electrons", "ions"})
 
     @property
     def required_elements(self) -> set[NamelistName | CardName]:
@@ -3589,6 +3872,11 @@ class PwscfInput(SimulationInput):
             req.add("fcp")
         if self.control.params.get("trism"):
             req.add("rism")
+        if (
+            getattr(self, "ions", None) is not None
+            and self.ions.params.get("ion_velocities") == "from_input"
+        ):
+            req.add("atomic_velocities")
         return req
 
     def __init__(
@@ -3603,6 +3891,7 @@ class PwscfInput(SimulationInput):
         pseudos: PseudoSet | None = None,
         **kwargs: PwscfInputType | CardBase | NamelistBase,
     ):
+        # Support creating an empty input for legacy reasons
         if filepath is None and len(kwargs) == 0:
             return
 
@@ -3722,7 +4011,7 @@ class PwscfInput(SimulationInput):
         verbose: bool,
         strict: bool,
     ) -> None:
-        if group in self.namelists:
+        if group in self.namelist_types:
             group_class = self.namelist_types[group]
         else:
             group_class = self.card_types[group]
@@ -3763,6 +4052,7 @@ class PwscfInput(SimulationInput):
             raise
 
     def write_text(self, filepath = None) -> str:  # noqa: ARG002
+        self.sync_and_validate()
         sections = {
             s: v for s, v in vars(self).items()
             if (s in PwscfInput.ordered_elements and v is not None)
@@ -3778,18 +4068,205 @@ class PwscfInput(SimulationInput):
 
         return text.strip() + "\n"
 
+    def sync_and_validate(self) -> None:
+        """Synchronize parameters across namelists/cards and validate their relationships."""
+        if not self.has_required_elements():
+            missing = set(self.required_elements) - set(vars(self))
+            msg = (
+                "Not all required elements are present!\n"
+                f"Missing elements: {sorted(missing, key=self.ordered_elements.index)}"
+            )
+            raise RuntimeError(msg)
+
+        if "ntyp" not in self.system.params:
+            self.system.update(ntyp=self.atomic_species.n_species)
+
+        if "nat" not in self.system.params:
+            self.system.update(nat=self.atomic_positions.n_atoms)
+
+        n_species = self.system.params["ntyp"]
+        n_atoms = self.system.params["nat"]
+
+        msg = (
+            "The {item} card does not match the number of {attr} in the &SYSTEM namelist!\n"
+            "Expected: {exp}\n"
+            "Actual:   {act}\n"
+        )
+        for card in (self.atomic_positions, self.atomic_forces, self.atomic_velocities):
+            if card is None:
+                continue
+
+            if card.n_atoms != n_atoms:
+                msg = msg.format(
+                    item=card.name, attr="atoms", exp=n_atoms, act=card.n_atoms
+                )
+                raise RuntimeError(msg)
+
+            if card.n_species != n_species:
+                msg = msg.format(
+                    item=card.name, attr="species", exp=n_species, act=card.n_species
+                )
+                raise RuntimeError(msg)
+
+        sys_occs = self.system.params.get("occupations")
+        if self.occupations is not None:
+            if sys_occs is None:
+                self.system.update(occupations="from_input")
+            elif sys_occs != "from_input":
+                msg = "Must have `occupations='from_input'` if the OCCUPATIONS card is present!"
+                raise RuntimeError(msg)
+        elif sys_occs == "from_input":
+            msg = "`occupations='from_input'` but OCCUPATIONS card is missing!"
+            raise RuntimeError(msg)
+
+        lfcp = self.control.params.get("lfcp")
+        if self.fcp is not None:
+            if lfcp is None:
+                self.control.update(lfcp=True)
+            elif not lfcp:
+                msg = "Must set `lfcp=True` if the FCP namelist is present!"
+                raise RuntimeError(msg)
+        elif lfcp:
+            msg = f"`{lfcp=}` but the FCP namelist is missing!"
+            raise RuntimeError(msg)
+
+        trism = self.control.params.get("trism")
+        if self.rism is not None:
+            if trism is None:
+                self.control.update(trism=True)
+            elif not trism:
+                msg = "Must set `trism=True` if the RISM namelist is present!"
+                raise RuntimeError(msg)
+        elif trism:
+            msg = f"`{trism=}` but the RISM namelist is missing!"
+            raise RuntimeError(msg)
+
+        # Get trism again since it could have been changed in the previous check
+        trism = self.control.params.get("trism")
+        if self.solvents is not None:
+            if trism is None:
+                self.control.update(trism=True)
+            elif not trism:
+                msg = "Must set `trism=True` if the SOLVENTS card is present!"
+                raise RuntimeError(msg)
+        elif trism:
+            msg = f"`{trism=}` but the SOLVENTS card is missing!"
+            raise RuntimeError(msg)
+
+        if self.ions is not None:
+            ion_velocities = self.ions.params.get("ion_velocities")
+            if self.atomic_velocities is not None:
+                if ion_velocities is None:
+                    self.ions.update(ion_velocities="from_input")
+                elif ion_velocities != "from_input":
+                    msg = (
+                        "Must have `ion_velocities='from_input` if the "
+                        "ATOMIC_VELOCITIES card is present!"
+                    )
+                    raise RuntimeError(msg)
+            elif ion_velocities == "from_input":
+                msg = f"`{ion_velocities=}` but the ATOMIC_VELOCITIES card is missing!"
+                raise RuntimeError(msg)
+        elif self.atomic_velocities is not None:
+            msg = "ATOMIC_VELOCITIES card is present but &IONS namelist is missing!"
+            raise RuntimeError(msg)
+
+        ibrav = self.system.params.get("ibrav")
+        if self.cell_parameters is not None:
+            if ibrav is None:
+                self.system.update(ibrav=0)
+            elif ibrav != 0:
+                msg = "Can not have `ibrav!=0` if the CELL_PARAMETERS card is present!"
+                raise RuntimeError(msg)
+        elif ibrav == 0:
+            msg = f"`{ibrav=}` but the CELL_PARAMETERS card is missing!"
+            raise RuntimeError(msg)
+
+        if self.constraints is not None:
+            ion_dynamics = self.ions.params.get("ion_dynamics")
+            if ion_dynamics not in {"damp", "verlet", "velocity-verlet"}:
+                msg = (
+                    "`ion_dynamics` must be one of 'damp','verlet' or "
+                    "'velocity-verlet' if constraints are provided!"
+                )
+                raise RuntimeError(msg)
+
+        if (
+            self.system.params.get("nspin") is None
+            and (
+                self.system.params.get("starting_magnetization") is not None
+                or self.system.params.get("tot_magnetization") is not None
+            )
+        ):
+            self.system.update(nspin=2)
+
+        if self.hubbard is not None:
+            old_hub_keys = (
+                "hubbard_u",
+                "hubbard_j0",
+                "hubbard_j",
+                "hubbard_v",
+                "hubbard_parameters",
+                "lda_plus_u",
+                "u_projection_type",
+            )
+            in_sys = [k for k in old_hub_keys if k in self.system.params]
+            if (
+                any(isinstance(i, HubbardAlpha) for i in self.hubbard.hubbard_params)
+                and "hubbard_alpha" in self.system.params
+            ):
+                in_sys.append("hubbard_alpha")
+
+            if len(in_sys) > 0:
+                msg = "Can not mix the Hubbard card with the following keys:\n"
+                for i in in_sys:
+                    msg += f"  {i}\n"
+                raise RuntimeError(msg)
+
+        for nml in self.namelists:
+            if nml.has_required():
+                continue
+
+            msg = (
+                f"Namelist &{nml.name.upper()} is missing some required variables!\n"
+                "Missing:\n"
+            )
+            for param in nml.namelist_def:
+                if param.required and param.name not in nml.params:
+                    msg += f"  {param.input_name}\n"
+
+            raise RuntimeError(msg)
+
+    @property
+    def namelists(self) -> tuple[NamelistBase]:
+        return tuple(
+            nml for i in self.namelist_types if (nml := getattr(self, i)) is not None
+        )
+
+    @property
+    def cards(self) -> tuple[CardBase]:
+        return tuple(
+            card for i in self.card_types if (card := getattr(self, i)) is not None
+        )
+
     @property
     def alat(self) -> float:
-        """Either ``celldm(1)`` or 1.0"""
+        """Either ``celldm(1)``, ``a`` (both from the &SYSTEM namelist), or 1.0"""
         if (celldm := self.system.params.get("celldm")) is not None:
             return celldm[1]
+        elif (alat := self.system.params.get("a")) is not None:
+            return alat
         else:
             return 1.0
 
     @property
     def axes(self) -> npt.NDArray[np.float64]:
         if self.system.ibrav == 0:
-            return self.alat * np.asarray(self.cell_parameters.axes, dtype=float)
+            axes = np.asarray(self.cell_parameters.axes, dtype=float)
+            if self.cell_parameters.specifier == "alat":
+                return self.alat * axes
+            else:
+                return axes
         elif self.system.ibrav == 1:
             return self.alat * np.eye((3, 3), dtype=float)
         else:
@@ -3900,6 +4377,13 @@ class PwscfInput(SimulationInput):
     def __contains__(self, key: str) -> bool:
         return hasattr(self, key)
 
+    def __repr__(self) -> str:
+        text = "PwscfInput(\n"
+        for elem in self.ordered_elements:
+            text += indent(f"{elem} = {getattr(self, elem, None)!r},\n", "    ")
+        text += ")"
+        return text
+
 
 def generate_pwscf_input(
     *,
@@ -3916,6 +4400,7 @@ def generate_pwscf_input(
     check: bool = False,
     verbose: bool = False,
     strict: bool = False,
+    require_pseudos_exist: bool = True,
     control_namelist:   Control   | None = None,
     system_namelist:    System    | None = None,
     electrons_namelist: Electrons | None = None,
@@ -3923,14 +4408,16 @@ def generate_pwscf_input(
     cell_namelist:      Cell      | None = None,
     fcp_namelist:       Fcp       | None = None,
     rism_namelist:      Rism      | None = None,
-    atomic_species_card:   AtomicSpecies   | None = None,
-    atomic_positions_card: AtomicPositions | None = None,
-    atomic_forces_card:    AtomicForces    | None = None,
-    k_points_card:         KPoints         | None = None,
-    cell_parameters_card:  CellParameters  | None = None,
-    constraints_card:      Constraints     | None = None,
-    occupations_card:      Occupations     | None = None,
-    hubbard_card:          Hubbard         | None = None,
+    atomic_species_card:    AtomicSpecies    | None = None,
+    atomic_positions_card:  AtomicPositions  | None = None,
+    atomic_forces_card:     AtomicForces     | None = None,
+    atomic_velocities_card: AtomicVelocities | None = None,
+    k_points_card:          KPoints          | None = None,
+    cell_parameters_card:   CellParameters   | None = None,
+    constraints_card:       Constraints      | None = None,
+    solvents_card:          Solvents         | None = None,
+    occupations_card:       Occupations      | None = None,
+    hubbard_card:           Hubbard          | None = None,
     at_pos_specifier:       AtomicPositionsSpecifier | None = None,
     kpts_specifier:         KPointsSpecifier         | None = None,
     cell_params_specifier:  CellParametersSpecifier  | None = None,
@@ -3967,7 +4454,10 @@ def generate_pwscf_input(
         )
         raise ValueError(msg)
     elif defaults == "standard":
-        warn(f"Passing `{defaults=}` is deprecated and does nothing!")
+        warn(
+            f"Passing `{defaults=}` is deprecated and does nothing!",
+            warn_type="deprecate"
+        )
         defaults = None
 
     if "ecut" in kwargs:
@@ -3977,7 +4467,8 @@ def generate_pwscf_input(
             warn_type="deprecate",
         )
         kwargs["ecutwfc"] = kwargs.pop("ecut")
-    # Setup for k-point symmetry run
+
+    # Setup for k-point symmetry run:
     #   ecutwfc is set to 1 so that pw.x will crash after initialization
     #   Symmetrized k-points will still be written to log output
     if ksymm_run:
@@ -4006,10 +4497,10 @@ def generate_pwscf_input(
 
     # Pre 7.1 Hubbard tags
     hub_keys_pre71 = ("hubbard_u", "hubbard_j0", "hubbard_j", "u_projection_type")
-    has_pre71_keys = any(_ in kwargs for _ in hub_keys_pre71)
+    has_pre71_keys = any(k in kwargs for k in hub_keys_pre71)
     # QE >=7.1 Hubbard tags
     hub_keys_v71 = ("hubbard", "hubbard_proj")
-    has_v71_keys = any(_ in kwargs for _ in hub_keys_v71)
+    has_v71_keys = any(k in kwargs for k in hub_keys_v71)
     if has_pre71_keys and has_v71_keys:
         msg = (
             "Found incompatible mix of Hubbard keys!"
@@ -4060,6 +4551,7 @@ def generate_pwscf_input(
             masses=kwargs.pop("mass") if "mass" in kwargs else kwargs.pop("masses", None),
             pseudos=pseudos,
             elem_order=kwargs.pop("elem_order", None),
+            require_pseudos_exist = require_pseudos_exist,
         )
         atomic_positions_card = AtomicPositions(
             atoms=atoms,
@@ -4091,6 +4583,7 @@ def generate_pwscf_input(
             system,
             pseudos=pseudos,
             elem_order=kwargs.pop("elem_order", None),
+            require_pseudos_exist=require_pseudos_exist,
         )
         atomic_positions_card = AtomicPositions.from_phys_sys(system)
         cell_parameters_card = CellParameters.from_phys_sys(system)
@@ -4108,24 +4601,21 @@ def generate_pwscf_input(
         (start_mag := kwargs.get("starting_magnetization")) is not None
         and all(isinstance(k, str) for k in start_mag)
     ):
-        if system is not None:
-            elem = system.structure.elem
-        else: # Earlier checks mean the atomic species card must exist by now
-            elem = atomic_species_card.atoms
+        elem = np.asarray(atomic_species_card.atoms)
 
         kwargs["starting_magnetization"] = {
             np.argmax(elem == k) + 1: v for k, v in start_mag.items()
         }
 
     # Set the number of spins (tot_magnetization=0 still needs nspin=2)
-    if kwargs.get("nspin") is not None:
-        if (
+    if (
+        kwargs.get("nspin") is None
+        and not (
             kwargs.get("starting_magnetization") is None
             and kwargs.get("tot_magnetization") is None
-        ):
-            kwargs["nspin"] = 1
-        else:
-            kwargs["nspin"] = 2
+        )
+    ):
+        kwargs["nspin"] = 2
 
     if bandfac is not None:
         if kwargs.get("nbnd") is not None:
@@ -4228,10 +4718,7 @@ def generate_pwscf_input(
             (hub := kwargs.get(old_hub_key)) is not None
             and all(isinstance(k, str) for k in hub)
         ):
-            if atomic_species_card is not None:
-                elem = atomic_species_card.atoms
-            else: # Earlier checks mean system must be defined if the card isn't
-                elem = system.structure.elem
+            elem = np.asarray(atomic_species_card.atoms)
 
             kwargs[old_hub_key] = {np.argmax(elem == k) + 1: v for k, v in hub.items()}
 
@@ -4253,38 +4740,40 @@ def generate_pwscf_input(
                 "In the future, this will not be allowed!"
             )
             hubbard_specifier = "atomic"
-        hubbard_card = Hubbard.from_dict(
+        hubbard_card = Hubbard.from_mapping(
             hubbard_inputs,
             specifier=hubbard_specifier,
             phys_sys=system,
         )
 
     pwscf_input = PwscfInput(
-        filepath              = None,
-        check                 = check,
-        version               = version,
-        phys_sys              = system,
-        verbose               = verbose,
-        strict                = strict,
-        pseudos               = pseudos,
-        prefix                = prefix,
-        outdir                = outdir,
-        pseudo_dir            = pseudo_dir,
-        control_namelist      = control_namelist,
-        system_namelist       = system_namelist,
-        electrons_namelist    = electrons_namelist,
-        ions_namelist         = ions_namelist,
-        cell_namelist         = cell_namelist,
-        fcp_namelist          = fcp_namelist,
-        rism_namelist         = rism_namelist,
-        atomic_species_card   = atomic_species_card,
-        atomic_positions_card = atomic_positions_card,
-        atomic_forces_card    = atomic_forces_card,
-        k_points_card         = k_points_card,
-        cell_parameters_card  = cell_parameters_card,
-        constraints_card      = constraints_card,
-        occupations_card      = occupations_card,
-        hubbard_card          = hubbard_card,
+        filepath               = None,
+        check                  = check,
+        version                = version,
+        phys_sys               = system,
+        verbose                = verbose,
+        strict                 = strict,
+        pseudos                = pseudos,
+        prefix                 = prefix,
+        outdir                 = outdir,
+        pseudo_dir             = pseudo_dir,
+        control_namelist       = control_namelist,
+        system_namelist        = system_namelist,
+        electrons_namelist     = electrons_namelist,
+        ions_namelist          = ions_namelist,
+        cell_namelist          = cell_namelist,
+        fcp_namelist           = fcp_namelist,
+        rism_namelist          = rism_namelist,
+        atomic_species_card    = atomic_species_card,
+        atomic_positions_card  = atomic_positions_card,
+        atomic_forces_card     = atomic_forces_card,
+        atomic_velocities_card = atomic_velocities_card,
+        k_points_card          = k_points_card,
+        cell_parameters_card   = cell_parameters_card,
+        constraints_card       = constraints_card,
+        solvents_card          = solvents_card,
+        occupations_card       = occupations_card,
+        hubbard_card           = hubbard_card,
         **kwargs
     )
 
@@ -4309,6 +4798,7 @@ def generate_pwscf_input(
             in_place=True,
         )
 
+    pwscf_input.sync_and_validate()
     return pwscf_input
 
 

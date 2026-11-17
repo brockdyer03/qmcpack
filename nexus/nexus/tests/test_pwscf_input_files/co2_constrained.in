@@ -1,0 +1,38 @@
+&control
+        calculation='relax'
+        restart_mode='from_scratch',
+        prefix='CO2',
+        pseudo_dir= './pseudo'
+        outdir='./tmp_CO2'
+        tstress= .true.
+/
+ &system
+    ibrav = 1,
+    celldm(1)= 11.000000,
+    nat = 3, ntyp = 2,
+    ecutwfc = 40, ecutrho = 320,
+    occupations='smearing', smearing='mv', degauss=0.001,
+   nosym= .true.
+/
+ &electrons
+    diagonalization = 'david', mixing_mode = 'local-TF',
+    mixing_beta = 0.1, conv_thr = 1.D-6
+    startingwfc = 'random'
+/
+ &ions
+   ion_dynamics = 'damp'
+
+/
+ATOMIC_SPECIES
+C   12.011    C.pz-n-rrkjus_psl.0.1.UPF
+O   15.999    O.pz-n-rrkjus_psl.0.1.UPF
+K_POINTS {gamma}
+ATOMIC_POSITIONS {angstrom}
+C  0.0000000   0.0000000   0.0000000
+O  0.0000000   0.0000000   1.5140760
+O  0.0000000   0.0000000  -1.5140760
+
+CONSTRAINTS
+2
+'distance', 1, 2, 3.1
+'distance', 1, 3, 2.8
