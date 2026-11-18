@@ -77,7 +77,7 @@ def to_obj(d):
     o = obj()
     for k,v in d.items():
         if hasattr(v,'__dict__'):
-            o[k] = to_obj(v)
+            o[k] = to_obj(v.__dict__)
         else:
             o[k] = v
     return o

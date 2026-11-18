@@ -653,6 +653,13 @@ class NamelistBase:
             msg = f"Could not find attribute '{name}'"
             raise AttributeError(msg)
 
+    def __delattr__(self, name: str) -> None:
+        if name != "params" and hasattr(self, "params") and name in self.params:
+            del self.params[name]
+        else:
+            msg = f"Could not find attribute '{name}'"
+            raise AttributeError(msg)
+
     def __setattr__(self, name: str, value: PwscfInputType) -> None:
         if (attr := name.lower()) in self.namelist_def.__members__:
             self.params[attr] = value
@@ -1190,10 +1197,11 @@ class AtomicForces(CardBase):
             msg = f"`forces` must have shape {(len(self.atoms), 3)} but has shape {shape}!"
             raise ValueError(msg)
 
-        if (net_force := self.forces.sum()) > 0:
+        # Somewhat arbitrary tolerance here, but it is not clear what QE's tolerance is.
+        if abs(net_force := self.forces.sum()) > 1e-8:
             warn(
                 f"Sum of external forces ({net_force:e}) is greater than zero! "
-                "The system's center of mass will not be stationary."
+                "The system's center of mass will move!"
             )
 
     @classmethod
@@ -1201,7 +1209,7 @@ class AtomicForces(CardBase):
         n_forces = len(lines) - 1
         atoms = []
         forces = np.empty((n_forces, 3), dtype=float)
-        for idx, l in enumerate(lines):
+        for idx, l in enumerate(lines[1:]):
             tokens = l.split()
             atoms.append(tokens[0])
             forces[idx, :] = tokens[1:4]
@@ -1210,10 +1218,13 @@ class AtomicForces(CardBase):
 
     def write(self) -> str:
         text = f"{self.name.upper()}\n"
-        for atom, force in zip(self.atoms, self.forces, strict=True):
-            text += "    {:2} {:{f}} {:{f}} {:{f}}\n".format(
-                atom, *force, f="16.8f",
-            )
+        lines = ""
+        for force in self.forces:
+            fmt = "16.10f"
+            lines += f"{force[0]:{fmt}} {force[1]:{fmt}} {force[2]:{fmt}}\n"
+        lines = indent(dedent(lines), "   ")
+        for atom, line in zip(self.atoms, lines.splitlines(), strict=True):
+            text += f"    {atom:<2} {line}\n"
 
         return text
 
@@ -4587,6 +4598,18 @@ def generate_pwscf_input(
         )
         atomic_positions_card = AtomicPositions.from_phys_sys(system)
         cell_parameters_card = CellParameters.from_phys_sys(system)
+
+    if (forces := kwargs.pop("forces", None)) is not None:
+        atomic_forces_card = AtomicForces(
+            atoms=atomic_positions_card.atoms,
+            forces=forces,
+        )
+
+    if (velocities := kwargs.pop("velocities", None)) is not None:
+        atomic_velocities_card = AtomicVelocities(
+            atoms=atomic_positions_card.atoms,
+            velocities=velocities,
+        )
 
     totmag_sys = kwargs.pop("totmag_sys", False)
     if totmag_sys:

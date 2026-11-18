@@ -1,3 +1,5 @@
+from pathlib import Path
+
 try:
     import numpy as np
     if np.lib.NumpyVersion(np.__version__) >= '2.0.0b1':
@@ -77,6 +79,8 @@ def value_diff(v1,v2,atol=def_atol,rtol=def_rtol,*,int_as_float=False):
         diff = False
     elif hasattr(v1,'__len__') and hasattr(v2,'__len__') and len(v1)==0 and len(v2)==0:
         pass
+    elif isinstance(v1, Path):
+        diff = v1!=v2
     else:
         diff = True # unsupported types
     #end if
@@ -237,9 +241,9 @@ def print_diff(o1,o2,atol=def_atol,rtol=def_rtol,*,int_as_float=False,text=False
     print(hline.format('right object'))
     print(o2)
     if not text:
-        diff,diff1,diff2 = object_diff(o1,o2,atol,rtol,int_as_float,full=True)
+        diff,diff1,diff2 = object_diff(o1,o2,atol,rtol,int_as_float=int_as_float,full=True)
     else:
-        diff,diff1,diff2 = text_diff(o1,o2,atol,rtol,int_as_float,full=True,by_line=by_line)
+        diff,diff1,diff2 = text_diff(o1,o2,atol,rtol,int_as_float=int_as_float,full=True,by_line=by_line)
     #end if
     d1 = obj(diff1)
     d2 = obj(diff2)

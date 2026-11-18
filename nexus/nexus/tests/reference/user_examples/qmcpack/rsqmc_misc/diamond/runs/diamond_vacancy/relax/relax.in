@@ -11,7 +11,7 @@
    ibrav           = 0
    input_dft       = 'lda'
    nat             = 15
-   nspin           = 1
+   !nspin           = 1
    ntyp            = 1
    tot_charge      = 0
 /

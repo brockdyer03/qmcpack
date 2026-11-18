@@ -208,7 +208,7 @@ class Pwscf(Simulation):
             self.system.remove_folded()
 
             input = self.input
-            preserve_kp = 'k_points' in input and 'specifier' in input.k_points and (input.k_points.specifier=='automatic' or input.k_points.specifier=='gamma')
+            preserve_kp = 'k_points' in input and (input.k_points.specifier=='automatic' or input.k_points.specifier=='gamma')
             if preserve_kp:
                 kp = deepcopy(input.k_points)
             #end if

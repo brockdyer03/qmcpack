@@ -69,6 +69,7 @@ TEST_FILES = {
     "co2_constrained.in":     TEST_DIR / "test_pwscf_input_files/co2_constrained.in",
     "furfural_pd_surface.in": TEST_DIR / "test_pwscf_input_files/furfural_pd_surface.in",
     "h2o_nacl_rism.in":       TEST_DIR / "test_pwscf_input_files/h2o_nacl_rism.in",
+    "nexus_water_forces.in":  TEST_DIR / "test_pwscf_input_files/nexus_water_forces.in",
     "README": TEST_DIR / "test_pwscf_input_files/README",
     "pseudos": (TEST_DIR / "../examples/qmcpack/pseudopotentials/").resolve(),
     }
@@ -206,6 +207,10 @@ def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
         assert(calc_card.atoms == ref_card.atoms)
         np.testing.assert_allclose(calc_card.forces, ref_card.forces)
 
+    elif isinstance(calc_card, AtomicVelocities) and isinstance(ref_card, AtomicVelocities):
+        assert(calc_card.atoms == ref_card.atoms)
+        np.testing.assert_allclose(calc_card.velocities, ref_card.velocities)
+
     elif isinstance(calc_card, Constraints) and isinstance(ref_card, Constraints):
         assert(calc_card.tolerance == ref_card.tolerance)
         # The classes make equality checks a bit difficult, so we check instead
@@ -213,6 +218,22 @@ def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
         con1 = set(calc_card.write().splitlines())
         con2 = set(ref_card.write().splitlines())
         assert(con1 == con2)
+
+    elif isinstance(calc_card, Solvents) and isinstance(ref_card, Solvents):
+        assert(calc_card.specifier == ref_card.specifier)
+        assert(calc_card.labels == ref_card.labels)
+        assert(type(calc_card.densities) is type(ref_card.densities))
+        assert(type(calc_card.densities_left) is type(ref_card.densities_left))
+        assert(type(calc_card.densities_right) is type(ref_card.densities_right))
+        if calc_card.densities is not None:
+            np.testing.assert_allclose(calc_card.densities, ref_card.densities)
+        else:
+            np.testing.assert_allclose(calc_card.densities_left, ref_card.densities_left)
+            np.testing.assert_allclose(calc_card.densities_right, ref_card.densities_right)
+
+    else:
+        msg = f"Unsupported card type {type(calc_card).__name__}"
+        raise TypeError(msg)
 
 def assert_pwscf_input_equals(calc_pwi: PwscfInput, ref_pwi: PwscfInput) -> None:
     for nml in PwscfInput.namelist_types:
@@ -1779,6 +1800,146 @@ def test_h2o_nacl_rism():
         ),
         masses = {"O": -1.0, "H": -1.0},
         pseudos = pseudos,
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
+
+
+def test_water_forces():
+    register_pseudo_files(["o_pbesol_v1.2.uspp.F.UPF", "h_pbesol_v1.4.uspp.F.UPF"])
+    control = Control(
+        calculation = "relax",
+        nstep = 100,
+        tprnfor = True,
+        outdir = "relax_output",
+        prefix = "relax",
+        max_seconds = 1200,
+        etot_conv_thr = 1e-06,
+        forc_conv_thr = 0.0001,
+        pseudo_dir = "./",
+    )
+    system = System(
+        ibrav = 0,
+        nat = 3,
+        ntyp = 2,
+        tot_charge = 0,
+        ecutwfc = 80,
+        ecutrho = 320,
+        input_dft = "pbe",
+        assume_isolated = "mp",
+    )
+    electrons = Electrons(conv_thr = 1e-07)
+    ions = Ions(ion_dynamics = "bfgs")
+    atomic_species = AtomicSpecies(
+        atoms = ["O", "H"],
+        masses = {"O": 15.999, "H": 1.008},
+        pseudos = {
+            "O": PseudoSet.pseudo_files["o_pbesol_v1.2.uspp.F.UPF"],
+            "H": PseudoSet.pseudo_files["h_pbesol_v1.4.uspp.F.UPF"],
+        },
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "bohr",
+        atoms = ["O", "H", "H"],
+        positions = np.array(
+            [
+                [7.9534469 , 7.77734499, 8.68592097],
+                [9.81293742, 7.77734499, 8.68592097],
+                [7.55890453, 9.59449696, 8.68592097],
+            ],
+        ),
+        force_multipliers = None,
+    )
+    k_points = KPoints(specifier = "gamma")
+    cell_parameters = CellParameters(
+        specifier = "bohr",
+        axes = np.array(
+            [
+                [17.37184195,  0.00000000,  0.00000000],
+                [ 0.00000000, 17.37184195,  0.00000000],
+                [ 0.00000000,  0.00000000, 17.37184195],
+            ],
+        ),
+    )
+    atomic_forces = AtomicForces(
+        atoms = ["O", "H", "H"],
+        forces = np.array(
+            [
+                [ 0.01117272,  0.01387508,  0.00000000],
+                [-0.00940373, -0.00388720,  0.00000000],
+                [-0.00176899, -0.00998788,  0.00000000],
+            ],
+        ),
+    )
+
+    ref_pwscf_input = PwscfInput(
+        control=control,
+        system=system,
+        electrons=electrons,
+        ions=ions,
+        atomic_species=atomic_species,
+        atomic_positions=atomic_positions,
+        k_points=k_points,
+        cell_parameters=cell_parameters,
+        atomic_forces=atomic_forces,
+    )
+
+    read_pwscf_input = PwscfInput(filepath=TEST_FILES["nexus_water_forces.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    phys_sys = generate_physical_system(
+        units = "B",
+        elem = ["O", "H", "H"],
+        pos = np.array(
+            [
+                [7.9534469 , 7.77734499, 8.68592097],
+                [9.81293742, 7.77734499, 8.68592097],
+                [7.55890453, 9.59449696, 8.68592097],
+            ],
+        ),
+        axes = 17.37184195 * np.eye(3),
+        kgrid = (1, 1, 1),
+        kshift = (0, 0, 0),
+        O = 6,
+        H = 1,
+    )
+
+    pseudos = PseudoSet(
+        pseudos={
+            "O": PseudoSet.pseudo_files["o_pbesol_v1.2.uspp.F.UPF"],
+            "H": PseudoSet.pseudo_files["h_pbesol_v1.4.uspp.F.UPF"],
+        },
+        codes="espresso",
+    )
+
+    gen_pwscf_input = generate_pwscf_input(
+        system = phys_sys,
+        pseudos = pseudos,
+        calculation = "relax",
+        nstep = 100,
+        tprnfor = True,
+        outdir = "relax_output",
+        prefix = "relax",
+        max_seconds = 1200,
+        etot_conv_thr = 1e-06,
+        forc_conv_thr = 0.0001,
+        pseudo_dir = "./",
+        ibrav = 0,
+        nat = 3,
+        ntyp = 2,
+        tot_charge = 0,
+        ecutwfc = 80,
+        ecutrho = 320,
+        input_dft = "pbe",
+        assume_isolated = "mp",
+        conv_thr = 1e-07,
+        ion_dynamics = "bfgs",
+        forces = np.array(
+            [
+                [ 0.01117272,  0.01387508,  0.00000000],
+                [-0.00940373, -0.00388720,  0.00000000],
+                [-0.00176899, -0.00998788,  0.00000000],
+            ],
+        ),
     )
     assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
 

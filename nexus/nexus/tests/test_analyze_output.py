@@ -65,6 +65,7 @@ def test_analyze_output_simulation_forms(tmp_path):
         job    = job(machine='ws1',cores=1),
         system = get_system(),
         pseudos= ["C.BFD.upf"],
+        ecutwfc= 200,
         )
     sentinel = object()
     sim.imresdir = str(tmp_path)

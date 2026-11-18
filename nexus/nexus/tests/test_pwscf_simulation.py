@@ -70,6 +70,7 @@ def test_minimal_init():
         job    = job(machine='ws1',cores=1),
         system = get_system(),
         pseudos= ["C.BFD.upf"],
+        ecutwfc= 200,
         )
 
     assert(isinstance(sim,Pwscf))
