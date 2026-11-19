@@ -27,7 +27,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from functools import cache
-from itertools import batched, chain, groupby, product
+from itertools import batched, groupby, product
 from os import PathLike
 from pathlib import Path
 from re import Pattern
@@ -170,8 +170,8 @@ def _with_accepted_types(
         raise ValueError(msg)
 
 
-def _get_array_params(deftype: NamelistDefType) -> frozenset[str]:
-    return {i.name for i in deftype if i.shape is not None}
+def _get_array_params(deftype: NamelistDefType) -> tuple[str]:
+    return tuple(i.name for i in deftype if i.shape is not None)
 
 def _get_namelist_names(deftype: NamelistDefType) -> tuple[str]:
     return tuple(i.name for i in deftype)
@@ -185,7 +185,7 @@ class NamelistBase:
     namelist_def: ClassVar[NamelistDefType]
     required: ClassVar[bool]
     params: dict[str, PwscfInputType]
-    array_params: ClassVar[frozenset[str]]
+    array_params: ClassVar[tuple[str]]
     namelist_names: tuple[str]
 
     def __init__(
@@ -2182,7 +2182,6 @@ class Occupations(CardBase):
             spin_occs.extend(map(float, line.split()))
 
         return cls(spin_occs)
-    #end def read
 
     def post_process_read(self, pwscf_input: PwscfInput) -> None:
         occupations = pwscf_input.system.params.get("occupations")
@@ -2209,23 +2208,23 @@ class Occupations(CardBase):
         occupations = self.occupations
         self.occupations = occupations[:nbnd]
         self.minority_spin_occs = occupations[nbnd:]
-    #end def post_process_read
 
     def write(self) -> str:
         text = f"{self.name.upper()}\n"
-        if self.minority_spin_occs is not None:
-            occs = chain(self.occupations, self.minority_spin_occs)
-        else:
-            occs = self.occupations
-
-        for occ_line in batched(occs, n=10):
+        for occ_line in batched(self.occupations, n=10):
             text += "   "
             for occ in occ_line:
-                text += f" {occ:>.8f}"
+                text += f" {occ:>.10f}"
             text += "\n"
 
+        if self.minority_spin_occs is not None:
+            for occ_line in batched(self.minority_spin_occs, n=10):
+                text += "   "
+                for occ in occ_line:
+                    text += f" {occ:>.10f}"
+                text += "\n"
+
         return text
-    #end def write
 
 
 class Solvents(CardBase):
@@ -2452,14 +2451,13 @@ class HubbardParam(ABC):
         expected = {i.upper() for i in expected}
         msg = ""
         if (hub_type := htype.upper()) not in expected:
-            msg += f"Line begins with '{hub_type}', not {expected}!\n"
+            msg += f"Line begins with '{hub_type}', but expected one of {expected}!\n"
             if (hub_class := Hubbard.hub_type_map.get(hub_type)) is not None:
-                msg += f"Perhaps you should use `{hub_class.__name__}.from_str()` instead?"
-                raise ValueError(msg)
-            else:
                 msg += (
-                    "This value is not known by Nexus, please check your input!\n"
+                    f"Perhaps you should use `{hub_class.__name__}.from_str()` instead?\n"
                 )
+            else:
+                msg += "This value is not known by Nexus, please check your input!\n"
 
         return msg
 
@@ -2513,6 +2511,12 @@ class HubbardParam(ABC):
         text += ")"
         return text
 
+    def __eq__(self, value: Self) -> bool:
+        return vars(self) == vars(value)
+
+    def __hash__(self) -> int:
+        return hash(tuple(getattr(self, key) for key in vars(self)))
+
 
 class HubbardU(HubbardParam):
     hubbard_type = "U"
@@ -2543,11 +2547,10 @@ class HubbardU(HubbardParam):
     def write(self) -> str:
         text = "U"
         lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold, self.manifold_2)
-        text += f"  {lbl_mnfld:>5}  {self.u_val:<6}"
+        text += f"  {lbl_mnfld:>4}  {self.u_val:<6}"
         if self.eigenstates is not None:
             text += " ".join(map(str, self.eigenstates))
-        text += "\n"
-        return text
+        return text.strip()
 
     @classmethod
     def from_str(cls, text: str) -> Self:
@@ -2558,6 +2561,7 @@ class HubbardU(HubbardParam):
 
         tokens = txt.split()
         if msg := super()._check_hub_type(tokens[0]):
+            msg += f"Line: {text!r}"
             raise ValueError(msg)
 
         label, manifold, manifold_2 = cls._split_lbl_mnfld(tokens[1])
@@ -2597,6 +2601,9 @@ class HubbardU(HubbardParam):
 
 
 class HubbardJ0(HubbardParam):
+    # Note that while QE's docs say this can not have 2 manifolds, the
+    # `card_hubbard` subroutine in `read_cards.f90` indicates that this is
+    # actually allowed.
     hubbard_type = "J0"
 
     label: str
@@ -2620,8 +2627,8 @@ class HubbardJ0(HubbardParam):
     def write(self) -> str:
         text = "J0"
         lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold, self.manifold_2)
-        text += f" {lbl_mnfld}  {self.j0_val:<6}\n"
-        return text
+        text += f" {lbl_mnfld}  {self.j0_val:<6}"
+        return text.strip()
 
     @classmethod
     def from_str(cls, text: str) -> Self:
@@ -2632,6 +2639,7 @@ class HubbardJ0(HubbardParam):
 
         tokens = txt.split()
         if msg := super()._check_hub_type(tokens[0]):
+            msg += f"Line: {text!r}"
             raise ValueError(msg)
 
         label, manifold, manifold_2 = cls._split_lbl_mnfld(tokens[1])
@@ -2679,7 +2687,10 @@ class HubbardAlpha(HubbardParam):
         self.label = super()._check_label(label)
         self.manifold = super()._check_manifold(manifold)
         self.alpha_val = float(alpha_val)
-        self.eigenstates = list(map(int, eigenstates))
+        if eigenstates is not None:
+            self.eigenstates = list(map(int, eigenstates))
+        else:
+            self.eigenstates = None
 
     def write(self) -> str:
         text = "ALPHA"
@@ -2687,8 +2698,7 @@ class HubbardAlpha(HubbardParam):
         text += f" {lbl_mnfld}  {self.alpha_val:<6}"
         if self.eigenstates is not None:
             text += " ".join(map(str, self.eigenstates))
-        text += "\n"
-        return text
+        return text.strip()
 
     @classmethod
     def from_str(cls, text: str) -> Self:
@@ -2699,6 +2709,7 @@ class HubbardAlpha(HubbardParam):
 
         tokens = txt.split()
         if msg := super()._check_hub_type(tokens[0]):
+            msg += f"Line: {text!r}"
             raise ValueError(msg)
 
         label, manifold, _ = cls._split_lbl_mnfld(tokens[1])
@@ -2777,19 +2788,18 @@ class HubbardJ(HubbardParam):
         text = ""
         lbl_mnfld = super()._join_lbl_mnfld(self.label, self.manifold)
         if (j_val := self.j_val) is not None:
-            text += f"J  {lbl_mnfld:>5}  {j_val:<6}\n"
+            text += f"J  {lbl_mnfld:>5}  {j_val:<6}".strip() + "\n"
 
         if (b_val := self.b_val) is not None:
-            text += f"B  {lbl_mnfld:>5}  {b_val:<6}\n"
-            return text # Must be for d-orbital, can't have others
+            text += f"B  {lbl_mnfld:>5}  {b_val:<6}".strip() + "\n"
 
         if (e2_val := self.e2_val) is not None:
-            text += f"E2 {lbl_mnfld:>5}  {e2_val:<6}\n"
+            text += f"E2 {lbl_mnfld:>5}  {e2_val:<6}".strip() + "\n"
 
         if (e3_val := self.e3_val) is not None:
-            text += f"E3 {lbl_mnfld:>5}  {e3_val:<6}\n"
+            text += f"E3 {lbl_mnfld:>5}  {e3_val:<6}".strip() + "\n"
 
-        return text
+        return text.strip()
 
     @classmethod
     def from_str(cls, text: str | list[str]) -> Self:
@@ -2805,6 +2815,7 @@ class HubbardJ(HubbardParam):
             tokens = line.strip().split()
             hubj_part = tokens[0].upper()
             if msg := super()._check_hub_type(hubj_part, {"J", "B", "E2", "E3"}):
+                msg += f"Line: {line!r}"
                 raise ValueError(msg)
 
             if idx == 0:
@@ -2957,7 +2968,7 @@ class HubbardV(HubbardParam):
         self.v_val = float(v_val)
 
     def write(self) -> str:
-        text = "V   "
+        text = "V  "
         lbl_1_mnfld = super()._join_lbl_mnfld(
             self.label_1, self.label_1_manifold, self.label_1_manifold_2,
         )
@@ -2970,9 +2981,9 @@ class HubbardV(HubbardParam):
             f"{lbl_1_mnfld:<8} "
             f"{lbl_2_mnfld:<8} "
             f"{self.label_1_idx:>2} {self.label_2_idx:>2}    "
-            f"{self.v_val:<6}\n"
+            f"{self.v_val:<6}"
         )
-        return text
+        return text.strip()
 
     @classmethod
     def from_str(cls, text: str) -> Self:
@@ -2983,6 +2994,7 @@ class HubbardV(HubbardParam):
 
         tokens = txt.split()
         if msg := super()._check_hub_type(tokens[0]):
+            msg += f"Line: {text!r}"
             raise ValueError(msg)
 
         label_1, label_1_manifold, label_1_manifold_2 = cls._split_lbl_mnfld(tokens[1])
@@ -3117,7 +3129,7 @@ class HubbardV(HubbardParam):
             if isinstance(param, HubbardU):
                 labeled_params[0] = param
                 continue
-            if isinstance(param, HubbardJ):
+            if isinstance(param, HubbardJ0):
                 labeled_params[1] = param
                 continue
 
@@ -3200,7 +3212,7 @@ class HubbardV(HubbardParam):
                 for l1idx, l2idx in product(index1, index2):
                     params = [l1, l1m1, l1idx, l2, l2m1, l2idx, info, l1m2, l2m2]
                     v_params.append(dict(zip(keys, params, strict=True)))
-            elif isinstance(info, Sequence):
+            elif isinstance(info, Sequence) and not isinstance(info, str):
                 for val in info:
                     if "value" not in val:
                         msg = "Missing key 'value' in HubbardV input mapping!"
@@ -3216,9 +3228,14 @@ class HubbardV(HubbardParam):
                         index1 = np.asarray(elem == l1).nonzero()[0]
                         index2 = np.asarray(elem == l2).nonzero()[0]
                         nn = phys_sys.structure.nearest_neighbors(rmax=radius)
-                        pairs = filter(
-                            lambda x: x[1] in nn[x[0]], product(index1, index2)
+                        pairs = tuple(
+                            filter(
+                                lambda x: x[1] in nn[x[0]], product(index1, index2)
+                            )
                         )
+                        if len(pairs) == 0:
+                            msg = f"No atoms of specified types found within {radius=}!"
+                            raise RuntimeError(msg)
                         for in1, in2 in pairs:
                             params = [
                                 l1, l1m1, in1+1, l2, l2m1, in2+1, v_val, l1m2, l2m2
@@ -3271,12 +3288,12 @@ class Hubbard(CardBase):
     )
 
     specifier: HubbardSpecifier
-    hubbard_params: list[HubbardParam]
+    params: list[HubbardParam]
 
     def __init__(
         self,
         specifier: HubbardSpecifier,
-        hubbard_params: list[HubbardParam],
+        params: list[HubbardParam],
         *,
         disable_sort_and_group: bool = False,
     ) -> None:
@@ -3289,18 +3306,18 @@ class Hubbard(CardBase):
             raise ValueError(msg)
 
         self.specifier = spec_low
-        if not all(isinstance(i, HubbardParam) for i in hubbard_params):
+        if not all(isinstance(i, HubbardParam) for i in params):
             msg = (
-                "Invalid type found in `hubbard_params`!\n"
+                "Invalid type found in `params`!\n"
                 "Expected instance of one or more of "
                 f"{[i.__name__ for i in Hubbard.hub_type_map.values()]}"
             )
             raise TypeError(msg)
 
         if not disable_sort_and_group:
-            self.hubbard_params = Hubbard.group_and_sort(hubbard_params)
+            self.params = Hubbard.group_and_sort(params)
         else:
-            self.hubbard_params = hubbard_params
+            self.params = params
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
@@ -3336,24 +3353,24 @@ class Hubbard(CardBase):
             msg = "Detected incompatible sets of Hubbard parameters!"
             raise ValueError(msg)
 
-        hubbard_params = []
+        params = []
         for idx, line in enumerate(lines[1:]):
             line = line.strip()
             hub_type = line.split()[0].upper()
             try:
-                hubbard_params.append(
+                params.append(
                     Hubbard.hub_type_map[hub_type].from_str(line)
                 )
             except Exception as exc:
                 exc.add_note(f"Error occurred on line {idx} of the HUBBARD card")
                 raise
 
-        return cls(specifier=specifier, hubbard_params=hubbard_params)
+        return cls(specifier=specifier, params=params)
 
     def write(self) -> str:
         text = f"HUBBARD ({self.specifier})\n"
-        for param in self.hubbard_params:
-            text += indent(f"{param.write()}", "    ")
+        for param in self.params:
+            text += indent(f"{param.write()}\n", "    ")
         return text
 
     @staticmethod
@@ -3529,25 +3546,33 @@ class Hubbard(CardBase):
         >>> inputs = {
         ...     "U": {"C-2p": 1.0}
         ... }
-        >>> Hubbard.from_dict(inputs, specifier="atomic")
-        Hubbard(
-            specifier = 'atomic',
-            hubbard_params = [
-                HubbardU(
-                    label       = 'C',
-                    manifold    = '2p',
-                    u_val       = 1.0,
-                    manifold_2  = None,
-                    eigenstates = None,
-                ),
-            ],
-        )
+        >>> hub = Hubbard.from_mapping(inputs, specifier="atomic")
+        >>> print(hub.write())
+        HUBBARD (ortho-atomic)
+            U  C-2p  1.0
+
+        Simple DFT+U+J input.
 
         >>> inputs = {
-        ...     "V" : {("C-2p", "C-2p"): 1e-8}
+        ...     "U":  {"Ce-4f": 5.8, "Fe-3d": 3.7},
+        ...     "J":  {"Ce-4f": 0.65},
+        ...     "E2": {"Ce-4f": 0.12},
+        ...     "E3": {"Ce-4f": 0.04},
+        ...     "B":  {"Fe-3d": 0.09},
         ... }
+        >>> hub = Hubbard.from_mapping(inputs, specifier="atomic")
+        HUBBARD (atomic)
+            U  Ce-4f  5.8
+            J  Ce-4f  0.65
+            E2 Ce-4f  0.12
+            E3 Ce-4f  0.04
+            U  Fe-3d  3.7
+            B  Fe-3d  0.09
+
+        Simple DFT+U+V input.
 
         >>> inputs = {
+        ...     "U": {"C-2p": 5.0},
         ...     "V": {
         ...         ("C-2p", "C-2p"): [
         ...             {"indices": (1, 2), "value": 1e-8},
@@ -3555,44 +3580,39 @@ class Hubbard(CardBase):
         ...         ]
         ...     }
         ... }
-
-        >>> inputs = {
-        ...     "V": {
-        ...         ("C-2p", "C-2p"): [{"radius": 5.0, "value": 1e-8}]
-        ...     }
-        ... }
-
-        >>> inputs = {
-        ...     "U": {"C-2p": 1.0},
-        ...     "V": {("C-2p", "C-2p"): 1e-8},
-        ... }
+        >>> hub = Hubbard.from_mapping(inputs, specifier="ortho-atomic")
+        >>> print(hub.write())
+        HUBBARD (ortho-atomic)
+            U  C-2p  5.0
+            V  C-2p     C-2p      1  2    1e-08
+            V  C-2p     C-2p      2  1    1e-08
 
         """
         inputs = {k.upper(): v for k, v in inputs.items()}
-        hubbard_params = []
+        params = []
         for itype, values in inputs.items():
             if itype == "U":
-                hubbard_params.extend(HubbardU.from_mapping(values))
+                params.extend(HubbardU.from_mapping(values))
             elif itype == "J0":
-                hubbard_params.extend(HubbardJ0.from_mapping(values))
+                params.extend(HubbardJ0.from_mapping(values))
             elif itype == "ALPHA":
-                hubbard_params.extend(HubbardAlpha.from_mapping(values))
+                params.extend(HubbardAlpha.from_mapping(values))
             elif itype in {"J", "B", "E2", "E3"}:
-                hubbard_params.extend(HubbardJ.from_mapping(values, itype=itype))
+                params.extend(HubbardJ.from_mapping(values, itype=itype))
             elif itype == "V":
-                hubbard_params.extend(HubbardV.from_mapping(values, phys_sys=phys_sys))
+                params.extend(HubbardV.from_mapping(values, phys_sys=phys_sys))
             else:
                 msg = (
                     f"Unrecognized interaction type {itype}!\n"
                     f"Known interaction types: {", ".join(cls.hub_type_map)}"
                 )
                 raise ValueError(msg)
-        return cls(specifier, hubbard_params)
+        return cls(specifier=specifier, params=params)
 
     @property
     def species(self) -> set[str]:
         species = set()
-        for param in self.hubbard_params:
+        for param in self.params:
             if isinstance(param, HubbardV):
                 species.update({param.label_1, param.label_2})
             else:
@@ -3602,8 +3622,8 @@ class Hubbard(CardBase):
     def __repr__(self) -> str:
         text = f"{type(self).__name__}(\n"
         text += f"    specifier = {self.specifier!r},\n"
-        text += "    hubbard_params = [\n"
-        for param in self.hubbard_params:
+        text += "    params = [\n"
+        for param in self.params:
             text += f"{indent(repr(param), " " * 8)},\n"
         text += "    ],\n"
         text += ")"
@@ -4058,6 +4078,8 @@ class PwscfInput(SimulationInput):
     def read_text(self, contents: str, filepath: PathLike | None = None) -> None:
         try:
             self.__init__(**PwscfInput.parser.read_text(contents))
+            for card in self.cards:
+                card.post_process_read(self)
         except Exception as exc:
             exc.add_note(f"Error occurred with file '{filepath}'")
             raise
@@ -4223,7 +4245,7 @@ class PwscfInput(SimulationInput):
             )
             in_sys = [k for k in old_hub_keys if k in self.system.params]
             if (
-                any(isinstance(i, HubbardAlpha) for i in self.hubbard.hubbard_params)
+                any(isinstance(i, HubbardAlpha) for i in self.hubbard.params)
                 and "hubbard_alpha" in self.system.params
             ):
                 in_sys.append("hubbard_alpha")

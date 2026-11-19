@@ -1,3 +1,4 @@
+import random
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -53,26 +54,27 @@ from . import TEST_DIR, NexusTestOrder, isolate_nexus_core, register_pseudo_file
 pytestmark = pytest.mark.order(NexusTestOrder.PWSCF_INPUT)
 
 TEST_FILES = {
-    "Cr_noncolin.in":         TEST_DIR / "test_pwscf_input_files/Cr_noncolin.in",
-    "Fe_start_ns_eig.in":     TEST_DIR / "test_pwscf_input_files/Fe_start_ns_eig.in",
-    "LiI_vc_relax.in":        TEST_DIR / "test_pwscf_input_files/LiI_vc_relax.in",
-    "Ni_surface.in":          TEST_DIR / "test_pwscf_input_files/Ni_surface.in",
-    "nexus_argon_scf.in":     TEST_DIR / "test_pwscf_input_files/nexus_argon_scf.in",
-    "nexus_h2_relax.in":      TEST_DIR / "test_pwscf_input_files/nexus_h2_relax.in",
-    "nexus_argon_bands.in":   TEST_DIR / "test_pwscf_input_files/nexus_argon_bands.in",
+    "Cr_noncolin.in": TEST_DIR / "test_pwscf_input_files/Cr_noncolin.in",
+    "Fe_start_ns_eig.in": TEST_DIR / "test_pwscf_input_files/Fe_start_ns_eig.in",
+    "LiI_vc_relax.in": TEST_DIR / "test_pwscf_input_files/LiI_vc_relax.in",
+    "Ni_surface.in": TEST_DIR / "test_pwscf_input_files/Ni_surface.in",
+    "nexus_argon_scf.in": TEST_DIR / "test_pwscf_input_files/nexus_argon_scf.in",
+    "nexus_h2_relax.in": TEST_DIR / "test_pwscf_input_files/nexus_h2_relax.in",
+    "nexus_argon_bands.in": TEST_DIR / "test_pwscf_input_files/nexus_argon_bands.in",
     "nexus_hubbard_e2_e3.in": TEST_DIR / "test_pwscf_input_files/nexus_hubbard_e2_e3.in",
     "TiO2_band_structure.in": TEST_DIR / "test_pwscf_input_files/TiO2_band_structure.in",
-    "TiO2_relax_freeze.in":   TEST_DIR / "test_pwscf_input_files/TiO2_relax_freeze.in",
-    "VO2_M1_afm.in":          TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.in",
-    "VO2_M1_afm.xsf":         TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.xsf",
+    "TiO2_relax_freeze.in": TEST_DIR / "test_pwscf_input_files/TiO2_relax_freeze.in",
+    "VO2_M1_afm.in": TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.in",
+    "VO2_M1_afm.xsf": TEST_DIR / "test_pwscf_input_files/VO2_M1_afm.xsf",
     "WSe2_band_structure.in": TEST_DIR / "test_pwscf_input_files/WSe2_band_structure.in",
-    "co2_constrained.in":     TEST_DIR / "test_pwscf_input_files/co2_constrained.in",
+    "co2_constrained.in": TEST_DIR / "test_pwscf_input_files/co2_constrained.in",
     "furfural_pd_surface.in": TEST_DIR / "test_pwscf_input_files/furfural_pd_surface.in",
-    "h2o_nacl_rism.in":       TEST_DIR / "test_pwscf_input_files/h2o_nacl_rism.in",
-    "nexus_water_forces.in":  TEST_DIR / "test_pwscf_input_files/nexus_water_forces.in",
+    "h2o_nacl_rism.in": TEST_DIR / "test_pwscf_input_files/h2o_nacl_rism.in",
+    "nexus_water_forces.in": TEST_DIR / "test_pwscf_input_files/nexus_water_forces.in",
+    "nexus_oxygen_occupations.in": TEST_DIR / "test_pwscf_input_files/nexus_oxygen_occupations.in",
     "README": TEST_DIR / "test_pwscf_input_files/README",
     "pseudos": (TEST_DIR / "../examples/qmcpack/pseudopotentials/").resolve(),
-    }
+}
 
 # These are input-only counterparts to supplemental PwscfAnalyzer runs.  Keep
 # them in the analyzer fixture tree: the analyzer tests need the complete run
@@ -190,12 +192,8 @@ def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
 
     elif isinstance(calc_card, Hubbard) and isinstance(ref_card, Hubbard):
         assert(calc_card.specifier == ref_card.specifier)
-        assert(len(calc_card.hubbard_params) == len(ref_card.hubbard_params))
-        # The classes make equality checks a bit difficult, so we check instead
-        # that their output is the same.
-        hub1 = set(calc_card.write().splitlines())
-        hub2 = set(ref_card.write().splitlines())
-        assert(hub1 == hub2)
+        assert(len(calc_card.params) == len(ref_card.params))
+        assert(set(calc_card.params) == set(ref_card.params))
 
     elif isinstance(calc_card, Occupations) and isinstance(ref_card, Occupations):
         np.testing.assert_allclose(calc_card.occupations, ref_card.occupations)
@@ -297,7 +295,7 @@ def test_join_array_params():
         match="Multiple formats of parameter 'celldm' found!",
     ):
         normalized = System.join_array_params(
-            {"celldm(1)" : "a", "celldm" : ["a", "b"]}
+            {"celldm(1)": "a", "celldm": ["a", "b"]}
         )
 
 
@@ -1010,6 +1008,398 @@ CELL_PARAMETERS (angstrom)
         match="Structure does not have axes!",
     ):
         CellParameters.from_phys_sys(s)
+
+
+def test_hubbard_u():
+    ref_hubbard = HubbardU("Mn", "3d", 5.0)
+    ref_text = "U  Mn-3d  5.0"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardU.from_str(ref_text)
+    dict_hubbard = HubbardU.from_mapping({"Mn-3d": 5.0})
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardU("Mn", "3p", manifold_2="3s", u_val=3.0)
+    ref_text = "U  Mn-3p-3s  3.0"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardU.from_str(ref_text)
+    dict_hubbard = HubbardU.from_mapping({"Mn-3p-3s": 3.0})
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardU("Mn", "3d", 4.70, eigenstates=[3, 4, 5])
+    ref_text = "U  Mn-3d  4.7   3 4 5"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardU.from_str(ref_text)
+    dict_hubbard = HubbardU.from_mapping({
+        "Mn-3d": {"value": 4.70, "eigenstates": [3, 4, 5]}
+    })
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Perhaps you should use `HubbardJ0.from_str()` instead?\n"
+            "Line: 'J0 Mn-3d 1.0'"
+        )
+    ):
+        HubbardU.from_str("J0 Mn-3d 1.0")
+
+
+def test_hubbard_j0():
+    ref_hubbard = HubbardJ0("Mn", "3d", 1.0)
+    ref_text = "J0 Mn-3d  1.0"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ0.from_str(ref_text)
+    dict_hubbard = HubbardJ0.from_mapping({"Mn-3d": 1.0})
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardJ0("Mn", "3p", manifold_2="3s", j0_val=3.0)
+    ref_text = "J0 Mn-3p-3s  3.0"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ0.from_str(ref_text)
+    dict_hubbard = HubbardJ0.from_mapping({"Mn-3p-3s": 3.0})
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Perhaps you should use `HubbardU.from_str()` instead?\n"
+            "Line: 'U Mn-3d 1.0'"
+        )
+    ):
+        HubbardJ0.from_str("U Mn-3d 1.0")
+
+
+def test_hubbard_alpha():
+    ref_hubbard = HubbardAlpha("Ni", "3d", 0.05)
+    ref_text = "ALPHA Ni-3d  0.05"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardAlpha.from_str(ref_text)
+    dict_hubbard = HubbardAlpha.from_mapping({"Ni-3d": 0.05})
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardAlpha("Ni", "3d", 0.05, eigenstates=[1, 2])
+    ref_text = "ALPHA Ni-3d  0.05  1 2"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardAlpha.from_str(ref_text)
+    dict_hubbard = HubbardAlpha.from_mapping({
+        "Ni-3d": {"value": 0.05, "eigenstates": [1, 2]}
+    })
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Perhaps you should use `HubbardU.from_str()` instead?\n"
+            "Line: 'U Mn-3d 1.0'"
+        )
+    ):
+        HubbardAlpha.from_str("U Mn-3d 1.0")
+
+
+def test_hubbard_j():
+    ref_hubbard = HubbardJ("Mn", "3d", j_val=1.0)
+    ref_text = "J  Mn-3d  1.0"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ.from_str(ref_text)
+    dict_hubbard = HubbardJ.from_mapping({"Mn-3d": 1.0}, itype="J")
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardJ("Mn", "3d", b_val=1.1)
+    ref_text = "B  Mn-3d  1.1"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ.from_str(ref_text)
+    dict_hubbard = HubbardJ.from_mapping({"Mn-3d": 1.1}, itype="B")
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardJ("Mn", "3d", j_val=1.0, b_val=1.1)
+    ref_text = (
+        "J  Mn-3d  1.0\n"
+        "B  Mn-3d  1.1"
+    )
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ.from_str(ref_text)
+    assert(read_hubbard == ref_hubbard)
+
+    ref_hubbard = HubbardJ("Mn", "3d", j_val=1.0, b_val=1.1)
+    ref_text = (
+        "J  Mn-3d  1.0\n"
+        "B  Mn-3d  1.1"
+    )
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ.from_str(ref_text)
+    assert(read_hubbard == ref_hubbard)
+
+    ref_hubbard = HubbardJ("Ce", "4f", j_val=0.65, e2_val=0.12, e3_val=0.04)
+    ref_text = (
+        "J  Ce-4f  0.65\n"
+        "E2 Ce-4f  0.12\n"
+        "E3 Ce-4f  0.04"
+    )
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardJ.from_str(ref_text)
+    assert(read_hubbard == ref_hubbard)
+
+    ref_hubbard = HubbardJ("Ce", "4f", j_val=0.65, e2_val=0.12, e3_val=0.04)
+    joined_hubbard = HubbardJ.join(
+        HubbardJ("Ce", "4f", j_val=0.65),
+        HubbardJ("Ce", "4f", e2_val=0.12),
+        HubbardJ("Ce", "4f", e3_val=0.04),
+    )
+    assert(joined_hubbard[0] == ref_hubbard)
+
+    with pytest.raises(
+        ValueError,
+        match="Can not specify E2 and/or E3 value for d-orbital manifold!",
+    ):
+        HubbardJ("Mn", "3d", j_val=1.0, e2_val=3.0)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Perhaps you should use `HubbardU.from_str()` instead?\n"
+            "Line: 'U Mn-3d 1.0'"
+        )
+    ):
+        HubbardJ.from_str("U Mn-3d 1.0")
+
+
+def test_hubbard_v(phys_sys):
+    ref_hubbard = HubbardV("Co", "3d", 1, "Co", "3d", 1, 7.70)
+    assert(ref_hubbard.is_onsite())
+    assert(not ref_hubbard.is_intersite())
+    ref_text = "V  Co-3d    Co-3d     1  1    7.7"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardV.from_str(ref_text)
+    dict_hubbard = HubbardV.from_mapping({
+        ("Co-3d", "Co-3d"): [
+            {"indices": (1, 1), "value": 7.70},
+        ]
+    })
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardV("Co", "3d", 1, "O", "2p", 19, 0.75)
+    assert(not ref_hubbard.is_onsite())
+    assert(ref_hubbard.is_intersite())
+    ref_text = "V  Co-3d    O-2p      1 19    0.75"
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = HubbardV.from_str(ref_text)
+    dict_hubbard = HubbardV.from_mapping({
+        ("Co-3d", "O-2p"): [
+            {"indices": (1, 19), "value": 0.75},
+        ]
+    })
+    assert(read_hubbard == ref_hubbard)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardV("C", "2p", 1, "C", "2p", 1, 1e-8)
+    with pytest.warns(
+        DeprecationWarning,
+        match="Automatic determination of indices from a physical system is deprecated"
+    ):
+        dict_hubbard = HubbardV.from_mapping({("C-2p", "C-2p"): 1e-8}, phys_sys=phys_sys)
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hubbard = HubbardV("C", "2p", 1, "O", "2p", 3, 1e-8)
+    dict_hubbard = HubbardV.from_mapping(
+        {
+            ("C-2p", "O-2p"): [{"radius": 5.0, "value": 1e-8}]
+        },
+        phys_sys=phys_sys,
+    )
+    assert(dict_hubbard[0] == ref_hubbard)
+
+    ref_hub_params = [
+        HubbardU("Co", "3d", 7.70),
+        HubbardV("Co", "3d", 1, "Co", "3p", 1, 1.00),
+        HubbardV("Co", "3p", 1, "Co", "3p", 1, 2.00),
+    ]
+
+    for _ in range(1_000): # Run a lot of random samples
+        hub_params = random.sample(ref_hub_params, k=len(ref_hub_params))
+        sorted_params = HubbardV.sort_by_interaction_type(v_params=hub_params)
+        assert(sorted_params == ref_hub_params)
+
+    ref_hub_params = [
+        HubbardV("Co", "3d", 1, "Co", "3d", 1, 7.70),
+        HubbardV("Co", "3d", 1, "Co", "3p", 1, 1.00),
+        HubbardV("Co", "3p", 1, "Co", "3p", 1, 2.00),
+    ]
+
+    for _ in range(1_000):
+        hub_params = random.sample(ref_hub_params, k=len(ref_hub_params))
+        sorted_params = HubbardV.sort_by_interaction_type(
+            v_params=hub_params, standard="Co-3d"
+        )
+        assert(sorted_params == ref_hub_params)
+
+    for _ in range(1_000):
+        hub_params = random.sample(ref_hub_params, k=len(ref_hub_params))
+        sorted_params = HubbardV.sort_by_interaction_type(
+            v_params=hub_params, standard="Co-3d", background="Co-3p"
+        )
+        assert(sorted_params == ref_hub_params)
+
+    with pytest.raises(
+        ValueError,
+        match="Must pass `phys_sys` if indices are not specified!",
+    ):
+        dict_hubbard = HubbardV.from_mapping(
+            {("C-2p", "O-2p"): 1e-8},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Must supply 'radius' or 'indices' for HubbardV input mapping!",
+    ):
+        dict_hubbard = HubbardV.from_mapping(
+            {("C-2p", "O-2p"): [{"value": 1e-8}]},
+        )
+
+    with pytest.raises(
+        TypeError,
+        match="Must provide a list of indices/radii for HubbardV input mapping!",
+    ):
+        dict_hubbard = HubbardV.from_mapping(
+            {("C-2p", "O-2p"): "wrong_thing"},
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("No atoms of specified types found within radius=5.0"),
+    ):
+        dict_hubbard = HubbardV.from_mapping(
+            {("C-2p", "C-2p"): [{"radius": 5.0, "value": 1e-8}]},
+            phys_sys=phys_sys,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "invalid literal for int() with base 10: 'bean'\n"
+            "HubbardV.from_mapping() failed with args:"
+        ),
+    ):
+        dict_hubbard = HubbardV.from_mapping({
+            ("Co-3d", "O-2p"): [
+                {"indices": ("bean", "bean"), "value": 0.75},
+            ]
+        })
+
+
+def test_hubbard():
+    ref_hubbard = Hubbard(
+        specifier="ortho-atomic",
+        params=[
+            HubbardU("Mn", "3d", 5.0),
+            HubbardJ0("Mn", "3d", 1.0),
+            HubbardU("Ni", "3d", 6.0),
+            HubbardJ0("Ni", "3d", 1.2),
+        ]
+    )
+    ref_text = """\
+HUBBARD (ortho-atomic)
+    U  Mn-3d  5.0
+    J0 Mn-3d  1.0
+    U  Ni-3d  6.0
+    J0 Ni-3d  1.2
+"""
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = Hubbard.read(ref_text.splitlines())
+    dict_hubbard = Hubbard.from_mapping(
+        {
+            "U":  {"Mn-3d": 5.0, "Ni-3d": 6.0},
+            "J0": {"Mn-3d": 1.0, "Ni-3d": 1.2},
+        },
+        specifier="ortho-atomic",
+    )
+    assert_card_equals(read_hubbard, ref_hubbard)
+    assert_card_equals(dict_hubbard, ref_hubbard)
+
+    ref_hubbard = Hubbard(
+        specifier="atomic",
+        params=[
+            HubbardU("Ce", "4f", 5.8),
+            HubbardJ("Ce", "4f", j_val=0.65, e2_val=0.12, e3_val=0.04),
+            HubbardU("Fe", "3d", 3.7),
+            HubbardJ("Fe", "3d", b_val=0.09)
+        ]
+    )
+    ref_text = """\
+HUBBARD (atomic)
+    U  Ce-4f  5.8
+    J  Ce-4f  0.65
+    E2 Ce-4f  0.12
+    E3 Ce-4f  0.04
+    U  Fe-3d  3.7
+    B  Fe-3d  0.09
+"""
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = Hubbard.read(ref_text.splitlines())
+    dict_hubbard = Hubbard.from_mapping(
+        inputs={
+            "U":  {"Ce-4f": 5.8, "Fe-3d": 3.7},
+            "J":  {"Ce-4f": 0.65},
+            "E2": {"Ce-4f": 0.12},
+            "E3": {"Ce-4f": 0.04},
+            "B":  {"Fe-3d": 0.09},
+        },
+        specifier="atomic"
+    )
+    assert_card_equals(read_hubbard, ref_hubbard)
+    assert_card_equals(dict_hubbard, ref_hubbard)
+
+    ref_hubbard = Hubbard(
+        specifier="ortho-atomic",
+        params=[
+            HubbardU("Co", "3d", 7.70),
+            HubbardV("Co", "3d", 1, "O", "2p", 19, 0.75),
+            HubbardV("Co", "3d", 1, "O", "2p", 46, 0.75),
+            HubbardV("Co", "3d", 1, "O", "2p", 43, 0.75),
+            HubbardV("Co", "3d", 1, "O", "2p", 54, 0.75),
+            HubbardV("Co", "3d", 1, "O", "2p", 11, 0.75),
+            HubbardV("Co", "3d", 1, "O", "2p", 22, 0.75),
+        ]
+    )
+    ref_text = """\
+HUBBARD (ortho-atomic)
+    U  Co-3d  7.7
+    V  Co-3d    O-2p      1 19    0.75
+    V  Co-3d    O-2p      1 46    0.75
+    V  Co-3d    O-2p      1 43    0.75
+    V  Co-3d    O-2p      1 54    0.75
+    V  Co-3d    O-2p      1 11    0.75
+    V  Co-3d    O-2p      1 22    0.75
+"""
+    assert(ref_hubbard.write() == ref_text)
+    read_hubbard = Hubbard.read(ref_text.splitlines())
+    dict_hubbard = Hubbard.from_mapping(
+        inputs={
+            "U": {"Co-3d": 7.7},
+            "V": {
+                ("Co-3d", "O-2p"): [
+                    {"indices": (1, 19), "value": 0.75},
+                    {"indices": (1, 46), "value": 0.75},
+                    {"indices": (1, 43), "value": 0.75},
+                    {"indices": (1, 54), "value": 0.75},
+                    {"indices": (1, 11), "value": 0.75},
+                    {"indices": (1, 22), "value": 0.75},
+                ]
+            },
+        },
+        specifier="ortho-atomic",
+    )
+    assert_card_equals(read_hubbard, ref_hubbard)
+    assert_card_equals(dict_hubbard, ref_hubbard)
 
 
 def test_co2_constrained():
@@ -1944,6 +2334,105 @@ def test_water_forces():
     assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
 
 
+def test_oxygen_occupations():
+    control = Control(
+        calculation = "scf",
+        prefix = "Oxygen",
+        outdir = "pwscf_output",
+        pseudo_dir = "./pseudo_dir",
+        verbosity = "high",
+    )
+    system = System(
+        ibrav = 1,
+        celldm = {1: 14},
+        nat = 1,
+        ntyp = 1,
+        ecutwfc = 50,
+        nosym = True,
+        occupations = "from_input",
+        nbnd = 6,
+        nspin = 2,
+        starting_magnetization = {1: 0.5},
+    )
+    electrons = Electrons(
+        conv_thr = 1e-07,
+    )
+    atomic_species = AtomicSpecies(
+        atoms = ["O"],
+        masses = {"O": 15.999},
+        pseudos = {"O": PseudoSet.pseudo_files["O.BFD.upf"]},
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "bohr",
+        atoms = ["O"],
+        positions = np.array(
+            [[0., 0., 0.]],
+        ),
+        force_multipliers = None,
+    )
+    k_points = KPoints(
+        specifier = "gamma",
+        kpoints = None,
+        weights = None,
+        grid = None,
+        shift = None,
+    )
+    occupations = Occupations(
+        occupations = np.array(
+            [1, 1, 1, 1, 0, 0],
+            dtype=float,
+        ),
+        minority_spin_occs = np.array(
+            [1, 0.3333333333, 0.3333333333, 0.3333333333, 0, 0],
+            dtype=float,
+        ),
+    )
+
+    ref_pwscf_input = PwscfInput(
+        control=control,
+        system=system,
+        electrons=electrons,
+        atomic_species=atomic_species,
+        atomic_positions=atomic_positions,
+        k_points=k_points,
+        occupations=occupations,
+    )
+
+    read_pwscf_input = PwscfInput(TEST_FILES["nexus_oxygen_occupations.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    pseudos = PseudoSet(
+        pseudos={"O": PseudoSet.pseudo_files["O.BFD.upf"]},
+        codes="espresso",
+    )
+
+    gen_pwscf_input = generate_pwscf_input(
+        calculation = "scf",
+        prefix = "Oxygen",
+        outdir = "pwscf_output",
+        pseudo_dir = "./pseudo_dir",
+        pseudos = pseudos,
+        verbosity = "high",
+        ibrav = 1,
+        celldm = {1: 14},
+        ecutwfc = 50,
+        nosym = True,
+        nbnd = 6,
+        nspin = 2,
+        starting_magnetization = {1: 0.5},
+        conv_thr = 1e-07,
+        kpts_specifier="gamma",
+        occupations = [1, 1, 1, 1, 0, 0],
+        minority_spin_occs = [1, 0.3333333333, 0.3333333333, 0.3333333333, 0, 0],
+        at_pos_specifier = "bohr",
+        atoms = ["O"],
+        positions = np.array(
+            [[0., 0., 0.]],
+        ),
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
+
+
 @isolate_nexus_core
 def test_input(tmp_path):
     register_pseudo_files(
@@ -2225,7 +2714,7 @@ def test_input(tmp_path):
     )
     hubbard = Hubbard(
         specifier = 'atomic',
-        hubbard_params = [
+        params = [
             HubbardU("Ce", "4f", 5.8),
             HubbardU("Fe", "3d", 3.7),
             HubbardJ("Fe", "3d", b_val=0.09),
