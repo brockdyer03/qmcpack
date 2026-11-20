@@ -958,6 +958,7 @@ class AtomicSpecies(CardBase):
         *,
         elem_order: list[str] | None = None,
         require_pseudos_exist: bool = True,
+        **_,
     ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             phys_sys = phys_sys.structure
@@ -1088,7 +1089,7 @@ class AtomicPositions(CardBase):
         pwi: PwscfInput,
         *,
         in_place: bool = True,
-    ):
+    ) -> Self | None:
         if not in_place:
             cpy = deepcopy(self)
             cpy.change_specifier(new_specifier, pwi)
@@ -1123,7 +1124,7 @@ class AtomicPositions(CardBase):
             case "angstrom":
                 pos /= convert(1.0, "A", "B")
             case "crystal":
-                pos  = np.dot(pos, inv(pwi.axes))
+                pos = np.dot(pos, inv(pwi.axes))
 
         self.positions = pos
         self.specifier = new_specifier
@@ -1134,6 +1135,7 @@ class AtomicPositions(CardBase):
         phys_sys: PhysicalSystem | Structure,
         /,
         old_force_multipliers: npt.NDArray[np.integer] | None = None,
+        **_,
     ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             structure = phys_sys.structure
@@ -1288,6 +1290,28 @@ class AtomicVelocities(CardBase):
     @property
     def n_species(self) -> int:
         return len(set(self.atoms))
+
+
+def _kmesh_from_kpts(
+    kpoints: npt.NDArray[np.floating],
+    kaxes: npt.NDArray[np.floating],
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]] | tuple[None, None]:
+    grid = np.array(
+        [np.unique_values(kpoints[:, i]).size for i in range(3)],
+        dtype=int
+    )
+    if not (kpoints == 0).any():
+        shift = np.ones((3,))
+    else:
+        shift = np.zeros((3,))
+
+    if (
+        np.prod(grid) != len(kpoints)
+        or not (kmesh(kaxes, grid, shift / 2) == kpoints).all()
+    ):
+        return None, None
+    else:
+        return grid, shift.astype(int)
 
 
 class KPoints(CardBase):
@@ -1499,18 +1523,12 @@ class KPoints(CardBase):
         new_specifier = new_specifier.lower()
         if self.specifier == new_specifier:
             return
-        elif new_specifier == "automatic":
-            msg = (
-                "Cannot map arbitrary kpoints into an automatic Monkhorst-Pack mesh!\n"
-                f"(Existing specifier: {self.specifier})"
-            )
-            raise ValueError(msg)
         elif new_specifier in {"tpiba_b", "crystal_b", "tpiba_c", "crystal_c"}:
             msg = f"Conversion to specifier '{new_specifier}' has not been implemented yet!"
-            raise ValueError(msg)
+            raise NotImplementedError(msg)
         elif self.specifier in {"tpiba_b", "crystal_b", "tpiba_c", "crystal_c"}:
             msg = f"Conversion from specifier '{self.specifier}' has not been implemented yet!"
-            raise ValueError(msg)
+            raise NotImplementedError(msg)
         elif new_specifier not in KPoints.valid_specifiers:
             msg = f"Specifier '{new_specifier}' is not known to Nexus!"
             raise ValueError(msg)
@@ -1523,20 +1541,31 @@ class KPoints(CardBase):
             case "crystal":
                 kpoints = np.dot(self.kpoints, pwi.kaxes)
             case "automatic":
-                grid  = self.grid
-                shift = 0.5 * self.shift
-                kpoints = kmesh(pwi.kaxes, grid, shift)
+                kpoints = kmesh(pwi.kaxes, self.grid, 0.5 * self.shift)
 
         match new_specifier:
-            case 'tpiba':
-                kpoints = kpoints / ((2 * pi) / pwi.alat)
-            case 'gamma':
-                kpoints = np.zeros((1, 3), dtype=int)
-            case 'crystal':
-                kpoints = np.dot(kpoints, inv(pwi.kaxes))
+            case "tpiba":
+                self.kpoints = kpoints / ((2 * pi) / pwi.alat)
+            case "gamma":
+                self.kpoints = None
+                self.weights = None
+                self.grid = None
+                self.shift = None
+            case "crystal":
+                self.kpoints = np.dot(kpoints, inv(pwi.kaxes))
+            case "automatic":
+                grid, shift = _kmesh_from_kpts(kpoints, pwi.kaxes)
+                if grid is None:
+                    msg = "Cannot map arbitrary kpoints into a Monkhorst-Pack mesh!"
+                    raise ValueError(msg)
+                self.grid = grid
+                self.shift = shift
+                self.kpoints = None
+                self.weights = None
 
-        self.kpoints   = kpoints
         self.specifier = new_specifier
+        if new_specifier not in {"gamma", "automatic"} and self.weights is None:
+            self.weights = np.ones((len(self.kpoints),), dtype=float)
 
     @classmethod
     def from_phys_sys(
@@ -1547,12 +1576,14 @@ class KPoints(CardBase):
         as_crystal: bool = False,
         no_gamma: bool = False,
         no_assume: bool = True,
+        **_,
     ) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
-            structure = phys_sys.structure
+            structure = deepcopy(phys_sys.structure)
         else:
-            structure = phys_sys
+            structure = deepcopy(phys_sys)
 
+        structure.change_units("B")
         nkpoints = len(structure.kpoints)
         if nkpoints == 0:
             msg = "Structure has no k-points, can not create card!"
@@ -1676,11 +1707,10 @@ class CellParameters(CardBase):
             )
             raise ValueError(msg)
 
-        alat = pwi.alat
         vec = self.axes
         match self.specifier:
             case "alat":
-                vec *= alat
+                vec *= pwi.alat
             case "bohr":
                 pass
             case "angstrom":
@@ -1688,7 +1718,7 @@ class CellParameters(CardBase):
 
         match s_low:
             case "alat":
-                vec /= alat
+                vec /= pwi.alat
             case "bohr":
                 pass
             case "angstrom":
@@ -1698,7 +1728,7 @@ class CellParameters(CardBase):
         self.specifier = s_low
 
     @classmethod
-    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /) -> Self:
+    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /, **_) -> Self:
         if isinstance(phys_sys, PhysicalSystem):
             structure = phys_sys.structure
         else:
@@ -3882,12 +3912,12 @@ class PwscfInput(SimulationInput):
             "control",
             "system",
             "electrons",
-            "atomic_species",
-            "atomic_positions",
-            "k_points",
         }
         if any(not hasattr(self, r) for r in req):
             return req
+        else:
+            req |= {"atomic_species", "atomic_positions", "k_points"}
+
         if self.system.params.get("ibrav") == 0:
             req.add("cell_parameters")
         if self.system.params.get("occupations") == "from_input":
@@ -3977,7 +4007,13 @@ class PwscfInput(SimulationInput):
                     setattr(self, group_name, PwscfInput.namelist_types[group_name]())
                     continue
                 card_type = PwscfInput.card_types[group_name]
-                card = card_type.from_phys_sys(phys_sys, pseudos=pseudos)
+                card = card_type.from_phys_sys(
+                    phys_sys,
+                    pseudos=pseudos,
+                    as_crystal=True,
+                    no_assume=True,
+                    no_gamma=False,
+                ) # Extra kwargs are swallowed by `from_phys_sys` to allow for this
                 self._process_group(
                     group=group_name,
                     value=card,
@@ -4294,10 +4330,13 @@ class PwscfInput(SimulationInput):
 
     @property
     def axes(self) -> npt.NDArray[np.float64]:
+        """Return cell axes in units of Bohr"""
         if self.system.ibrav == 0:
             axes = np.asarray(self.cell_parameters.axes, dtype=float)
             if self.cell_parameters.specifier == "alat":
                 return self.alat * axes
+            elif self.cell_parameters.specifier == "angstrom":
+                return convert(axes, "A", "B")
             else:
                 return axes
         elif self.system.ibrav == 1:
@@ -4318,18 +4357,35 @@ class PwscfInput(SimulationInput):
         self,
         system: PhysicalSystem,
         elem_order: list[str] | None = None,
-    ):
+    ) -> None:
         system.check_folded_system()
         system.change_units("B")
         self.system.incorporate_phys_sys(system, overwrite=True)
         self.cell_parameters = CellParameters.from_phys_sys(system)
-        self.k_points = KPoints.from_phys_sys(system, no_gamma=False, no_assume=False)
+        self.k_points = KPoints.from_phys_sys(
+            system, as_crystal=True, no_gamma=False, no_assume=False
+        )
         self.atomic_species = AtomicSpecies.from_phys_sys(
             system, pseudos=self.atomic_species.pseudos, elem_order=elem_order,
         )
         self.atomic_positions = AtomicPositions.from_phys_sys(
             system, old_force_multipliers=self.atomic_positions.force_multipliers
         )
+
+    @overload
+    def return_system(
+        self,
+        *,
+        structure_only: Literal[True],
+        **valency: int | float,
+    ) -> Structure: ...
+    @overload
+    def return_system(
+        self,
+        *,
+        structure_only: Literal[False],
+        **valency: int | float,
+    ) -> PhysicalSystem: ...
 
     def return_system(
         self,
@@ -4344,8 +4400,8 @@ class PwscfInput(SimulationInput):
         scale = self.alat
         axes = self.axes
 
-        elem = self.atomic_positions.atoms
         ap = self.atomic_positions.change_specifier("bohr", self, in_place=False)
+        elem = ap.atoms
         pos = ap.positions
 
         kp = self.k_points.change_specifier("tpiba", self, in_place=False)
@@ -4362,8 +4418,6 @@ class PwscfInput(SimulationInput):
             units   = "B",
             rescale = False,
         )
-        structure.zero_corner()
-        structure.recenter()
 
         if structure_only:
             return structure

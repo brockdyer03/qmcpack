@@ -47,7 +47,7 @@ from ..pwscf_input import (
     generate_pwscf_input,
 )
 from ..pwscf_input_defs import SystemDefinitions
-from ..structure import Structure, read_structure
+from ..structure import Structure, kmesh, read_structure
 from ..unit_converter import convert
 from . import TEST_DIR, NexusTestOrder, isolate_nexus_core, register_pseudo_files
 
@@ -97,7 +97,6 @@ for input_name in (
     TEST_FILES[f'supplemental_{input_name}.in'] = (
         ANALYZER_SUPPLEMENTAL_DIR / input_name / 'pwscf.in'
         )
-#end for
 
 for file in TEST_FILES.values():
     assert(file.exists()), f"Test file not found! {file}"
@@ -845,14 +844,14 @@ K_POINTS (crystal)
         nkpoints=8,
         kpoints=np.array(
             [
-                [0.0,  0.0,  0.0],
-                [0.25, 0.0,  0.0],
-                [0.0,  0.25, 0.0],
-                [0.25, 0.25, 0.0],
-                [0.0,  0.0,  0.25],
-                [0.25, 0.0,  0.25],
-                [0.0,  0.25, 0.25],
-                [0.25, 0.25, 0.25],
+                [0.0000000000000, 0.0000000000000, 0.0000000000000],
+                [0.1322943021475, 0.0000000000000, 0.0000000000000],
+                [0.0000000000000, 0.1322943021475, 0.0000000000000],
+                [0.1322943021475, 0.1322943021475, 0.0000000000000],
+                [0.0000000000000, 0.0000000000000, 0.1322943021475],
+                [0.1322943021475, 0.0000000000000, 0.1322943021475],
+                [0.0000000000000, 0.1322943021475, 0.1322943021475],
+                [0.1322943021475, 0.1322943021475, 0.1322943021475],
             ],
             dtype=float,
         ),
@@ -915,7 +914,7 @@ K_POINTS (crystal)
     ):
         KPoints.read(["K_POINTS (bean)"])
 
-    s = Structure()
+    s = Structure(units="B")
     with pytest.raises(
         ValueError,
         match="Structure has no k-points, can not create card!",
@@ -955,12 +954,6 @@ K_POINTS (crystal)
             kpoints=np.ones((4,3)),
             weights=np.ones((5,2)),
         )
-
-    with pytest.raises(
-        ValueError,
-        match="Cannot map arbitrary kpoints into an automatic Monkhorst-Pack mesh!",
-    ):
-        ref_kpoints.change_specifier("automatic", None)
 
 
 def test_cell_parameters(phys_sys):
@@ -1400,6 +1393,365 @@ HUBBARD (ortho-atomic)
     )
     assert_card_equals(read_hubbard, ref_hubbard)
     assert_card_equals(dict_hubbard, ref_hubbard)
+
+
+def test_pwscf_input(phys_sys):
+    ref_control = Control(
+        calculation   = "scf",
+        restart_mode  = "from_scratch",
+        outdir        = "./output",
+        pseudo_dir    = "../pseudo/",
+        etot_conv_thr = 1.0e-8,
+        forc_conv_thr = 1.0e-6,
+        tstress       = True,
+        tprnfor       = True,
+    )
+    ref_system = System(
+        ibrav           = 0,
+        nat             = 3,
+        ntyp            = 3,
+        ecutwfc         = 100,
+        tot_charge      = 0,
+        occupations     = "smearing",
+        degauss         = 0.0005 ,
+        smearing        = "degauss",
+        assume_isolated = "makov-payne",
+    )
+    ref_electrons = Electrons(
+        conv_thr        = 1.0e-8,
+        mixing_beta     = 0.7,
+        diagonalization = "david",
+    )
+    ref_atomic_species = AtomicSpecies(
+        atoms   = ["C", "H", "O"],
+        masses  = {"C": 12.011, "H": 1.008, "O": 15.999},
+        pseudos = {
+            "C": PseudoSet.pseudo_files["C.BFD.upf"],
+            "H": PseudoSet.pseudo_files["H.BFD.upf"],
+            "O": PseudoSet.pseudo_files["O.BFD.upf"],
+        },
+    )
+    ref_atomic_positions = AtomicPositions(
+        specifier = "angstrom",
+        atoms     = ["C", "H", "O"],
+        positions = np.arange(9, dtype=float).reshape((3, 3)),
+    )
+    ref_k_points = KPoints(
+        specifier="crystal",
+        nkpoints=8,
+        kpoints=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [0.0, 0.0, 0.5],
+                [0.5, 0.0, 0.5],
+                [0.0, 0.5, 0.5],
+                [0.5, 0.5, 0.5]
+            ],
+            dtype=float,
+        ),
+        weights=np.ones((8,), dtype=int),
+    )
+    ref_cell_parameters = CellParameters(
+        specifier = "angstrom",
+        axes = np.array(
+            [
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 2.0],
+            ],
+            dtype=float,
+        ),
+    )
+    pwscf_input = PwscfInput(
+        phys_sys=phys_sys,
+        control=ref_control,
+        system=ref_system,
+        electrons=ref_electrons,
+        pseudos=PseudoSet(
+            pseudos={
+                "C": PseudoSet.pseudo_files["C.BFD.upf"],
+                "H": PseudoSet.pseudo_files["H.BFD.upf"],
+                "O": PseudoSet.pseudo_files["O.BFD.upf"],
+            },
+            codes="espresso",
+        ),
+    )
+
+    assert(pwscf_input.has_required_elements())
+    assert(
+        pwscf_input.required_elements == {
+            "control",
+            "system",
+            "electrons",
+            "atomic_species",
+            "atomic_positions",
+            "k_points",
+            "cell_parameters",
+        }
+    )
+    assert_namelist_equals(pwscf_input.control, ref_control)
+    assert_namelist_equals(pwscf_input.system, ref_system)
+    assert_namelist_equals(pwscf_input.electrons, ref_electrons)
+    assert_card_equals(pwscf_input.atomic_species, ref_atomic_species)
+    assert_card_equals(pwscf_input.atomic_positions, ref_atomic_positions)
+    assert_card_equals(pwscf_input.k_points, ref_k_points)
+    assert_card_equals(pwscf_input.cell_parameters, ref_cell_parameters)
+    assert(pwscf_input.ions is None)
+    assert(pwscf_input.cell is None)
+    assert(pwscf_input.fcp is None)
+    assert(pwscf_input.rism is None)
+    assert(pwscf_input.atomic_forces is None)
+    assert(pwscf_input.atomic_velocities is None)
+    assert(pwscf_input.constraints is None)
+    assert(pwscf_input.occupations is None)
+    assert(pwscf_input.hubbard is None)
+    assert(pwscf_input.solvents is None)
+
+    calc_phys_sys = pwscf_input.return_system(structure_only=False, C=4, H=1, O=6)
+    ref_phys_sys = phys_sys.copy()
+    ref_phys_sys.change_units("B")
+    calc_structure = calc_phys_sys.structure
+    ref_structure = ref_phys_sys.structure
+
+    assert(dict(calc_phys_sys.valency) == dict(ref_phys_sys.valency))
+    assert(calc_structure.elem.tolist() == ref_structure.elem.tolist())
+    np.testing.assert_allclose(calc_structure.pos, ref_structure.pos)
+    np.testing.assert_allclose(calc_structure.axes, ref_structure.axes)
+    np.testing.assert_allclose(calc_structure.kpoints, ref_structure.kpoints)
+
+    new_pwscf_input = deepcopy(pwscf_input)
+    new_pwscf_input.incorporate_system(calc_phys_sys)
+    new_pwscf_input.atomic_positions.change_specifier("angstrom", new_pwscf_input)
+    new_pwscf_input.cell_parameters.change_specifier("angstrom", new_pwscf_input)
+    assert_pwscf_input_equals(new_pwscf_input, pwscf_input)
+
+
+def test_change_specifier():
+    ref_control = Control(calculation   = "scf")
+    ref_system = System(ibrav=0, nat=3, ntyp=3, ecutwfc=100)
+    ref_electrons = Electrons(conv_thr=1.0e-8, mixing_beta=0.7, diagonalization="david")
+    ref_atomic_species = AtomicSpecies(
+        atoms   = ["C", "H", "O"],
+        masses  = {"C": 12.011, "H": 1.008, "O": 15.999},
+        pseudos = {
+            "C": PseudoSet.pseudo_files["C.BFD.upf"],
+            "H": PseudoSet.pseudo_files["H.BFD.upf"],
+            "O": PseudoSet.pseudo_files["O.BFD.upf"],
+        },
+    )
+    ref_atomic_positions = AtomicPositions(
+        specifier = "angstrom",
+        atoms     = ["C", "H", "O"],
+        positions = np.arange(9, dtype=float).reshape((3, 3)),
+    )
+    ref_k_points = KPoints(
+        specifier="crystal",
+        nkpoints=8,
+        kpoints=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [0.0, 0.0, 0.5],
+                [0.5, 0.0, 0.5],
+                [0.0, 0.5, 0.5],
+                [0.5, 0.5, 0.5],
+            ],
+            dtype=float,
+        ),
+        weights=np.ones((8,), dtype=int),
+    )
+    ref_cell_parameters = CellParameters(
+        specifier="angstrom",
+        axes=2.0 * np.eye(3, dtype=float),
+    )
+    pwi = PwscfInput(
+        phys_sys=phys_sys,
+        control=ref_control,
+        system=ref_system,
+        electrons=ref_electrons,
+        atomic_species=ref_atomic_species,
+        atomic_positions=ref_atomic_positions,
+        k_points=ref_k_points,
+        cell_parameters=ref_cell_parameters,
+    )
+
+    ref_cell_param_bohr = CellParameters(
+        specifier = "bohr",
+        axes = 3.77945226577 * np.eye(3, dtype=float),
+    )
+    # alat is always in bohr, so this is the same as above but with a different specifier
+    ref_cell_param_alat = CellParameters(
+        specifier = "alat",
+        axes = 3.77945226577 * np.eye(3, dtype=float),
+    )
+    # Angstrom to Bohr
+    ang_to_bohr = ref_cell_parameters.change_specifier(
+        "bohr", pwi, in_place=False,
+    )
+    assert_card_equals(ang_to_bohr, ref_cell_param_bohr)
+
+    # Bohr to Angstrom
+    bohr_to_ang = ref_cell_param_bohr.change_specifier(
+        "angstrom", pwi, in_place=False,
+    )
+    assert_card_equals(bohr_to_ang, ref_cell_parameters)
+
+    # Angstrom to alat
+    ang_to_alat = ref_cell_parameters.change_specifier(
+        "alat", pwi, in_place=False,
+    )
+    assert_card_equals(ang_to_alat, ref_cell_param_alat)
+
+    # alat to Angstrom
+    alat_to_ang = ref_cell_param_alat.change_specifier(
+        "angstrom", pwi, in_place=False,
+    )
+    assert_card_equals(alat_to_ang, ref_cell_parameters)
+
+    # Bohr to alat
+    bohr_to_alat = ref_cell_param_bohr.change_specifier(
+        "alat", pwi, in_place=False,
+    )
+    assert_card_equals(bohr_to_alat, ref_cell_param_alat)
+
+    # alat to Bohr
+    alat_to_bohr = ref_cell_param_alat.change_specifier(
+        "bohr", pwi, in_place=False,
+    )
+    assert_card_equals(alat_to_bohr, ref_cell_param_bohr)
+
+    ref_kpts_gamma = KPoints("gamma")
+    ref_kpts_tpiba = KPoints(
+        specifier="tpiba",
+        nkpoints=8,
+        kpoints=np.array(
+            [
+                [0.0000000000000, 0.0000000000000, 0.0000000000000],
+                [0.1322943021475, 0.0000000000000, 0.0000000000000],
+                [0.0000000000000, 0.1322943021475, 0.0000000000000],
+                [0.1322943021475, 0.1322943021475, 0.0000000000000],
+                [0.0000000000000, 0.0000000000000, 0.1322943021475],
+                [0.1322943021475, 0.0000000000000, 0.1322943021475],
+                [0.0000000000000, 0.1322943021475, 0.1322943021475],
+                [0.1322943021475, 0.1322943021475, 0.1322943021475],
+            ],
+            dtype=float,
+        ),
+        weights=np.ones((8,), dtype=int),
+    )
+
+    # crystal to tpiba
+    crystal_to_tpiba = ref_k_points.change_specifier("tpiba", pwi, in_place=False)
+    assert_card_equals(crystal_to_tpiba, ref_kpts_tpiba)
+
+    # tpiba to crystal
+    tpiba_to_crystal = ref_kpts_tpiba.change_specifier("crystal", pwi, in_place=False)
+    assert_card_equals(tpiba_to_crystal, ref_k_points)
+
+    # automatic to tpiba
+    kpts_automatic = KPoints("automatic", grid=(2, 2, 2), shift=(0, 0, 0))
+    auto_to_tpiba = kpts_automatic.change_specifier("tpiba", pwi, in_place=False)
+    assert_card_equals(auto_to_tpiba, ref_kpts_tpiba)
+
+    # automatic to crystal
+    auto_to_crystal = kpts_automatic.change_specifier("crystal", pwi, in_place=False)
+    assert_card_equals(auto_to_crystal, ref_k_points)
+
+    # automatic to gamma
+    auto_to_gamma = kpts_automatic.change_specifier("gamma", pwi, in_place=False)
+    assert_card_equals(auto_to_gamma, ref_kpts_gamma)
+
+    # tpiba to gamma
+    tpiba_to_gamma = ref_kpts_tpiba.change_specifier("gamma", pwi, in_place=False)
+    assert_card_equals(tpiba_to_gamma, ref_kpts_gamma)
+
+    # crystal to gamma
+    crystal_to_gamma = ref_k_points.change_specifier("gamma", pwi, in_place=False)
+    assert_card_equals(crystal_to_gamma, ref_kpts_gamma)
+
+    ref_gamma_auto = KPoints("automatic", grid=(1, 1, 1), shift=(0, 0, 0))
+    # gamma to automatic
+    gamma_to_auto = ref_kpts_gamma.change_specifier("automatic", pwi, in_place=False)
+    assert_card_equals(gamma_to_auto, ref_gamma_auto)
+
+    ref_crystal_auto = KPoints("automatic", grid=(2, 2, 2), shift=(0, 0, 0))
+    # crystal to auto
+    crystal_to_auto = ref_k_points.change_specifier("automatic", pwi, in_place=False)
+    assert_card_equals(crystal_to_auto, ref_crystal_auto)
+
+    ref_shifted_tpiba_auto = KPoints("automatic", grid=(2, 2, 2), shift=(1, 1, 1))
+    # shifted tpiba to auto
+    kpts = kmesh(pwi.kaxes, (2, 2, 2), (0.5, 0.5, 0.5)) / ((2 * np.pi) / pwi.alat)
+    kpts_shifted_tpiba = KPoints("tpiba", kpoints=kpts, weights=np.ones((len(kpts),)))
+    shifted_tpiba_to_auto = kpts_shifted_tpiba.change_specifier(
+        "automatic", pwi, in_place=False
+    )
+    assert_card_equals(shifted_tpiba_to_auto, ref_shifted_tpiba_auto)
+
+    ref_gamma_crystal = KPoints(
+        "crystal",
+        nkpoints=1,
+        kpoints=np.array([[0, 0, 0]], dtype=float),
+        weights=np.array([1], dtype=float),
+    )
+    # gamma to automatic
+    gamma_to_crystal = ref_kpts_gamma.change_specifier("crystal", pwi, in_place=False)
+    assert_card_equals(gamma_to_crystal, ref_gamma_crystal)
+
+    ref_gamma_tpiba = KPoints(
+        "tpiba",
+        nkpoints=1,
+        kpoints=np.array([[0, 0, 0]], dtype=float),
+        weights=np.array([1], dtype=float),
+    )
+    # gamma to tpiba
+    gamma_to_tpiba = ref_kpts_gamma.change_specifier("tpiba", pwi, in_place=False)
+    assert_card_equals(gamma_to_tpiba, ref_gamma_tpiba)
+
+    tmp_kpts = KPoints(
+        "tpiba", kpoints=np.arange(9).reshape(3,3), weights=np.ones((3,))
+    )
+    with pytest.raises(
+        ValueError,
+        match="Cannot map arbitrary kpoints into a Monkhorst-Pack mesh!",
+    ):
+        tmp_kpts.change_specifier("automatic", pwi)
+
+    ref_at_pos_bohr = AtomicPositions(
+        specifier = "bohr",
+        atoms     = ["C", "H", "O"],
+        positions = convert(np.arange(9, dtype=float).reshape((3, 3)), "A", "B"),
+    )
+
+    ang_to_bohr = ref_atomic_positions.change_specifier("bohr", pwi, in_place=False)
+    assert_card_equals(ang_to_bohr, ref_at_pos_bohr)
+
+    bohr_to_ang = ref_at_pos_bohr.change_specifier("angstrom", pwi, in_place=False)
+    assert_card_equals(bohr_to_ang, ref_atomic_positions)
+
+    ref_at_pos_crystal = AtomicPositions(
+        specifier = "crystal",
+        atoms     = ["C", "H", "O"],
+        positions = np.dot(
+            np.arange(9, dtype=float).reshape((3, 3)),
+            np.linalg.inv(ref_cell_parameters.axes),
+        ),
+    )
+
+    ang_to_crystal = ref_atomic_positions.change_specifier(
+        "crystal", pwi, in_place=False
+    )
+    assert_card_equals(ang_to_crystal, ref_at_pos_crystal)
+
+    bohr_to_crystal = ref_at_pos_bohr.change_specifier(
+        "crystal", pwi, in_place=False
+    )
+    assert_card_equals(bohr_to_crystal, ref_at_pos_crystal)
 
 
 def test_co2_constrained():
