@@ -1003,6 +1003,37 @@ CELL_PARAMETERS (angstrom)
         CellParameters.from_phys_sys(s)
 
 
+def test_constraints():
+    ref_constraints=Constraints(
+        constraints=[
+            TypeCoordConstraint(1, 2, 2.0, 5.0),
+            AtomCoordConstraint(1, 2, 2.0, 5.0),
+            DistanceConstraint(1, 2, 5.0),
+            PlanarAngleConstraint(1, 2, 3, 5.0),
+            TorsionalAngleConstraint(1, 2, 3, 4, 5.0),
+            BennettProjConstraint(1, np.array([1, 2, 3]), 5.0),
+            PotentialWallConstraint(1.0, 2.0, 3.0, 5.0),
+        ]
+    )
+    ref_text = """\
+CONSTRAINTS
+  7
+    'type_coord'      1          2          2.00000000 5.00000000
+    'atom_coord'      1          2          2.00000000 5.00000000
+    'distance'        1          2          5.00000000
+    'planar_angle'    1          2          3          5.00000000
+    'torsional_angle' 1          2          3          4          5.00000000
+    'bennett_proj'    1          1.00000000 2.00000000 3.00000000 5.00000000
+    'potential_wall'  1.00000000 2.00000000 3.00000000 5.00000000
+"""
+    assert(ref_constraints.write() == ref_text)
+    read_constraints = Constraints.read(ref_text.splitlines())
+    print(read_constraints)
+    print(ref_constraints)
+    assert_card_equals(read_constraints, ref_constraints)
+
+
+
 def test_hubbard_u():
     ref_hubbard = HubbardU("Mn", "3d", 5.0)
     ref_text = "U  Mn-3d  5.0"
@@ -1752,6 +1783,67 @@ def test_change_specifier():
         "crystal", pwi, in_place=False
     )
     assert_card_equals(bohr_to_crystal, ref_at_pos_crystal)
+
+
+def test_occupations():
+    ref_occupations = Occupations(occupations=2 * np.ones((24,), dtype=float))
+    ref_text = """\
+OCCUPATIONS
+    2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000
+    2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000
+    2.0000000000 2.0000000000 2.0000000000 2.0000000000
+"""
+    assert(ref_occupations.write() == ref_text)
+    read_occupations = Occupations.read(ref_text.splitlines())
+    assert_card_equals(read_occupations, ref_occupations)
+
+    ref_min_occs = Occupations(
+        occupations=2 * np.ones((12,), dtype=float),
+        minority_spin_occs=2 * np.ones((12,), dtype=float),
+    )
+    pwscf_input = PwscfInput(
+        control=Control(calculation="scf"),
+        system=System(
+            ibrav=1,
+            celldm={1: 1},
+            nat=3,
+            ntyp=3,
+            ecutwfc=100,
+            nbnd=12,
+            nspin=2,
+            occupations="from_input",
+        ),
+        electrons=Electrons(),
+        atomic_species=AtomicSpecies(
+            atoms=["C", "H", "O"],
+            masses=None,
+            pseudos={
+                "C": PseudoSet.pseudo_files["C.BFD.upf"],
+                "H": PseudoSet.pseudo_files["H.BFD.upf"],
+                "O": PseudoSet.pseudo_files["O.BFD.upf"],
+            },
+        ),
+        atomic_positions=AtomicPositions(
+            specifier="angstrom",
+            atoms=["C", "H", "O"],
+            positions=np.arange(9, dtype=float).reshape((3, 3)),
+        ),
+        k_points=KPoints("gamma"),
+        occupations=ref_min_occs,
+    )
+    ref_min_text = """\
+OCCUPATIONS
+    2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000
+    2.0000000000 2.0000000000
+    2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000 2.0000000000
+    2.0000000000 2.0000000000
+"""
+    assert(ref_min_occs.write() == ref_min_text)
+    read_min_occs = Occupations.read(ref_min_text.splitlines())
+    # Before post-process, it should just be equal to the original occupations
+    assert_card_equals(read_min_occs, ref_occupations)
+    read_min_occs.post_process_read(pwscf_input)
+    assert_card_equals(read_min_occs, ref_min_occs)
 
 
 def test_co2_constrained():

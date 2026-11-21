@@ -1769,9 +1769,13 @@ class Constraint(ABC):
         for key, value in kwargs.items():
             invalid = False
             dtype = types[key]
+            if "None" in dtype and value is None:
+                continue
+
             if dtype == "int" and value.is_integer():
                 # Convert integer-value floats to ints
                 value = int(value)
+
             if (
                 (
                     dtype.startswith("int")
@@ -2138,10 +2142,28 @@ class Constraints(CardBase):
                 )
                 raise ValueError(msg)
             cons_type = Constraints.constraint_map[cons_name]
-            cons_params = tuple(float(i) for i in tokens[1:])
-            constraints.append(
-                cons_type(*cons_params)
-            )
+            if cons_type is BennettProjConstraint:
+                if len(tokens) == 6:
+                    cons_params = (
+                        float(tokens[1]),
+                        np.array(tokens[2:5], dtype=float),
+                        float(tokens[5]),
+                    )
+                else:
+                    cons_params = (float(tokens[1]), np.array(tokens[1:4], dtype=float))
+            else:
+                cons_params = tuple(float(i) for i in tokens[1:])
+            try:
+                constraints.append(
+                    cons_type(*cons_params)
+                )
+            except Exception as exc:
+                exc.add_note(
+                    f"Constraint initialization failed for constraint {cons_type.__name__} "
+                    "with parameters:\n"
+                    f"{"\n".join(map(str, cons_params))}"
+                )
+                raise
 
         if (n_found := len(constraints)) != nconstraints:
             msg = f"Expected {nconstraints} constraints but only found {n_found}!"
@@ -2161,10 +2183,17 @@ class Constraints(CardBase):
         text += "\n"
 
         for cons in self.constraints:
-            text += f"    {f"'{cons.name}'":15}"
-            for val in cons.values:
-                fmt = "4d" if isinstance(val, int | np.integer) else "12.8f"
-                text += f" {val:{fmt}}"
+            text += f"    {f"'{cons.name}'":17}"
+            if isinstance(cons, BennettProjConstraint):
+                text += " {:<10d} {:>10.8f} {:>10.8f} {:>10.8f}".format(
+                    cons.atom_idx, *cons.vector,
+                )
+                if cons.constr_target is not None:
+                    text += f" {cons.constr_target:>10.8f}"
+            else:
+                for val in cons.values:
+                    fmt = "<10d" if isinstance(val, int | np.integer) else ">10.8f"
+                    text += f" {val:{fmt}}"
             text += "\n"
         return text
 
@@ -3731,6 +3760,7 @@ class PwscfInputParser:
         }
 
     def read_text(self, text: str) -> dict:
+        """Read a Pwscf input file and return a dict mapping namelist/card names to their values."""
         text = re.sub(r"!.*?\n", "\n", text) # Remove all comments
         nmlist_lines = ""
         card_lines = ""
