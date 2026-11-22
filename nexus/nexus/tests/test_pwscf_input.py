@@ -145,7 +145,6 @@ def frozen_phys_sys(phys_sys):
     )
     return ps
 
-
 def assert_namelist_equals[T: NamelistBase](calc_nml: T, ref_nml: T) -> None:
     assert(type(calc_nml) is type(ref_nml))
     assert(isinstance(calc_nml, NamelistBase))
@@ -645,6 +644,10 @@ ATOMIC_SPECIES
     calc_at_spec = AtomicSpecies.from_phys_sys(phys_sys, pseudos=pseudos)
     assert_card_equals(calc_at_spec, ref_at_spec)
 
+    up_at_spec = deepcopy(ref_at_spec)
+    up_at_spec.update(atoms=["C", "H", "O"])
+    assert_card_equals(up_at_spec, ref_at_spec)
+
     with pytest.raises(
         NotAnElementError,
         match="Not all atoms supplied are elements!",
@@ -796,6 +799,86 @@ ATOMIC_POSITIONS (angstrom)
         )
 
 
+def test_atomic_forces():
+    ref_atomic_forces = AtomicForces(
+        atoms = ["C", "C", "C"],
+        forces = np.zeros((3, 3)),
+    )
+    assert(ref_atomic_forces.n_atoms == 3)
+    assert(ref_atomic_forces.n_species == 1)
+
+    ref_text = """\
+ATOMIC_FORCES
+    C     0.0000000000     0.0000000000     0.0000000000
+    C     0.0000000000     0.0000000000     0.0000000000
+    C     0.0000000000     0.0000000000     0.0000000000
+"""
+    assert(ref_atomic_forces.write() == ref_text)
+    read_atomic_forces = AtomicForces.read(ref_text.splitlines())
+    assert_card_equals(read_atomic_forces, ref_atomic_forces)
+
+    with pytest.warns(
+        NexusUserWarning,
+        match=re.escape("Sum of external forces (3.000000e+00) is greater than zero!"),
+    ):
+        AtomicForces(atoms = ["C"], forces = np.ones((1, 3)))
+
+    with pytest.raises(
+        NotAnElementError,
+        match=re.escape("Not all atoms supplied are elements!"),
+    ):
+        AtomicForces(atoms = ["bean"], forces = np.zeros((1, 3)))
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("`forces` must have shape (1, 3) but has shape (3, 3)!"),
+    ):
+        AtomicForces(atoms = ["C"], forces = np.zeros((3, 3)))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Can not change specifier for card type AtomicForces, no specifiers available!"
+    ):
+        ref_atomic_forces.change_specifier(None, None)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Can not create AtomicForces card from a PhysicalSystem/Structure!"
+    ):
+        ref_atomic_forces.from_phys_sys(None)
+
+
+def test_atomic_velocities():
+    ref_atomic_velocities = AtomicVelocities(
+        atoms = ["C", "C", "C"],
+        velocities = np.zeros((3, 3)),
+    )
+    assert(ref_atomic_velocities.n_atoms == 3)
+    assert(ref_atomic_velocities.n_species == 1)
+
+    ref_text = """\
+ATOMIC_VELOCITIES
+    C     0.0000000000     0.0000000000     0.0000000000
+    C     0.0000000000     0.0000000000     0.0000000000
+    C     0.0000000000     0.0000000000     0.0000000000
+"""
+    assert(ref_atomic_velocities.write() == ref_text)
+    read_atomic_velocities = AtomicVelocities.read(ref_text.splitlines())
+    assert_card_equals(read_atomic_velocities, ref_atomic_velocities)
+
+    with pytest.raises(
+        NotAnElementError,
+        match=re.escape("Not all atoms supplied are elements!"),
+    ):
+        AtomicVelocities(atoms = ["bean"], velocities = np.zeros((1, 3)))
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("`velocities` must have shape (1, 3) but has shape (3, 3)!"),
+    ):
+        AtomicVelocities(atoms = ["C"], velocities = np.zeros((3, 3)))
+
+
 def test_kpoints(phys_sys):
     ref_kpoints = KPoints(
         specifier="crystal",
@@ -914,6 +997,12 @@ K_POINTS (crystal)
     ):
         KPoints.read(["K_POINTS (bean)"])
 
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        ref_kpoints.change_specifier("bean", None)
+
     s = Structure(units="B")
     with pytest.raises(
         ValueError,
@@ -974,6 +1063,10 @@ CELL_PARAMETERS (angstrom)
     calc_cell_params = CellParameters.read(ref_text.splitlines())
     assert_card_equals(calc_cell_params, ref_cell_params)
 
+    # Should do nothing
+    calc_cell_params = ref_cell_params.change_specifier("angstrom", None, in_place=False)
+    assert_card_equals(calc_cell_params, ref_cell_params)
+
     calc_cell_params = CellParameters.from_phys_sys(phys_sys)
     assert_card_equals(calc_cell_params, ref_cell_params)
 
@@ -988,6 +1081,12 @@ CELL_PARAMETERS (angstrom)
         match="Specifier 'bean' is not known to Nexus!",
     ):
         CellParameters.read(["CELL_PARAMETERS (bean)"])
+
+    with pytest.raises(
+        ValueError,
+        match="Specifier 'bean' is not known to Nexus!",
+    ):
+        ref_cell_params.change_specifier("bean", None)
 
     with pytest.raises(
         ValueError,
@@ -1012,19 +1111,20 @@ def test_constraints():
             PlanarAngleConstraint(1, 2, 3, 5.0),
             TorsionalAngleConstraint(1, 2, 3, 4, 5.0),
             BennettProjConstraint(1, np.array([1, 2, 3]), 5.0),
-            PotentialWallConstraint(1.0, 2.0, 3.0, 5.0),
-        ]
+            PotentialWallConstraint(1.0, 2.0, 3.0),
+        ],
+        tolerance=1e-5,
     )
     ref_text = """\
 CONSTRAINTS
-  7
+  7  1.000000e-05
     'type_coord'      1          2          2.00000000 5.00000000
     'atom_coord'      1          2          2.00000000 5.00000000
     'distance'        1          2          5.00000000
     'planar_angle'    1          2          3          5.00000000
     'torsional_angle' 1          2          3          4          5.00000000
     'bennett_proj'    1          1.00000000 2.00000000 3.00000000 5.00000000
-    'potential_wall'  1.00000000 2.00000000 3.00000000 5.00000000
+    'potential_wall'  1.00000000 2.00000000 3.00000000
 """
     assert(ref_constraints.write() == ref_text)
     read_constraints = Constraints.read(ref_text.splitlines())
@@ -1032,6 +1132,95 @@ CONSTRAINTS
     print(ref_constraints)
     assert_card_equals(read_constraints, ref_constraints)
 
+    constr_dict = {
+        "type_coord":      {"atom_type_1": 1, "atom_type_2": 2, "cutoff_radius": 2.0, "smoothing": 5.0},
+        "atom_coord":      {"atom_idx": 1, "atom_type": 2, "cutoff_radius": 2.0, "smoothing": 5.0},
+        "distance":        [{"atom_idx_1": 1, "atom_idx_2": 2, "constr_target": 5.0}],
+        "planar_angle":    {"atom_idx_1": 1, "atom_idx_2": 2, "atom_idx_3": 3, "constr_target": 5.0},
+        "torsional_angle": {"atom_idx_1": 1, "atom_idx_2": 2, "atom_idx_3": 3, "atom_idx_4": 4, "constr_target": 5.0},
+        "bennett_proj":    {"atom_idx": 1, "vector": [1.0, 2.0, 3.0], "constr_target": 5.0},
+        "potential_wall":  {"prefactor": 1.0, "exponent": 2.0, "cutoff": 3.0},
+    }
+    dict_constraints = Constraints.from_mapping(constr_dict, tolerance=1e-5)
+    assert_card_equals(dict_constraints, ref_constraints)
+
+    with pytest.raises(
+        TypeError,
+        match="Received non-constraint type in constraints list!"
+    ):
+        Constraints(["thing"])
+
+    with pytest.raises(
+        ValueError,
+        match="Constraint 'bean' is not known to Nexus!"
+    ):
+        Constraints.read(["CONSTRAINTS", "7", "'bean', 1, 2, 3"])
+
+    with pytest.raises(
+        TypeError,
+        match="Constraint initialization failed for constraint type 'DistanceConstraint'"
+    ):
+        Constraints.read(["CONSTRAINTS", "1", "'distance', 1, 2, 3, 4, 5"])
+
+    with pytest.raises(
+        ValueError,
+        match="Expected 5 constraints but only found 1!"
+    ):
+        Constraints.read(["CONSTRAINTS", "5", "'distance', 1, 2, 3.00000000"])
+
+    with pytest.raises(
+        ValueError,
+        match="Constraint 'bean' is not known to Nexus!"
+    ):
+        Constraints.from_mapping({"bean": []})
+
+    with pytest.raises(
+        TypeError,
+        match="Must provide a dict of input arguments or a list of dicts of inputs!"
+    ):
+        Constraints.from_mapping({"distance": 1.0})
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        TypeCoordConstraint("bean", 2, 2.0, 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        AtomCoordConstraint("bean", 2, 2.0, 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        DistanceConstraint("bean", 2, 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        PlanarAngleConstraint("bean", 2, 3, 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        TorsionalAngleConstraint("bean", 2, 3, 4, 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        BennettProjConstraint("bean", np.array([1, 2, 3]), 5.0)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Input `.*?` should have type .*? but has type str!"
+    ):
+        PotentialWallConstraint("bean", 2.0, 3.0)
 
 
 def test_hubbard_u():
@@ -1803,30 +1992,13 @@ OCCUPATIONS
     )
     pwscf_input = PwscfInput(
         control=Control(calculation="scf"),
-        system=System(
-            ibrav=1,
-            celldm={1: 1},
-            nat=3,
-            ntyp=3,
-            ecutwfc=100,
-            nbnd=12,
-            nspin=2,
-            occupations="from_input",
-        ),
+        system=System(nbnd=12, nspin=2, occupations="from_input"),
         electrons=Electrons(),
         atomic_species=AtomicSpecies(
-            atoms=["C", "H", "O"],
-            masses=None,
-            pseudos={
-                "C": PseudoSet.pseudo_files["C.BFD.upf"],
-                "H": PseudoSet.pseudo_files["H.BFD.upf"],
-                "O": PseudoSet.pseudo_files["O.BFD.upf"],
-            },
+            atoms=["C"], masses=None, pseudos={"C": PseudoSet.pseudo_files["C.BFD.upf"]},
         ),
         atomic_positions=AtomicPositions(
-            specifier="angstrom",
-            atoms=["C", "H", "O"],
-            positions=np.arange(9, dtype=float).reshape((3, 3)),
+            specifier="bohr", atoms=["C"], positions=np.array([[1, 2, 3]]),
         ),
         k_points=KPoints("gamma"),
         occupations=ref_min_occs,
@@ -1844,6 +2016,66 @@ OCCUPATIONS
     assert_card_equals(read_min_occs, ref_occupations)
     read_min_occs.post_process_read(pwscf_input)
     assert_card_equals(read_min_occs, ref_min_occs)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("Spin occupations must be a 1D array, but has shape (3, 3)!")
+    ):
+        Occupations(np.eye(3))
+
+    with pytest.raises(
+        ValueError,
+        match="Majority and minority spin occupations must have the same length!"
+    ):
+        Occupations([1, 2], [1, 2, 3])
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape("Minority spin occupations must be a 1D array, but has shape (2, 2)!")
+    ):
+        Occupations([1, 2], np.eye(2))
+
+    tmp = PwscfInput(
+        control=Control(calculation="scf"),
+        system=System(occupations="smearing", nbnd=24, nspin=1),
+        electrons=Electrons(),
+        atomic_species=AtomicSpecies(
+            atoms=["C"], masses=None, pseudos={"C": PseudoSet.pseudo_files["C.BFD.upf"]},
+        ),
+        atomic_positions=AtomicPositions(
+            specifier="bohr", atoms=["C"], positions=np.array([[1, 2, 3]]),
+        ),
+        k_points=KPoints("gamma"),
+        occupations=ref_min_occs,
+    )
+    with pytest.raises(
+        ValueError,
+        match="Explicit occupations only available with `occupations=from_input`!",
+    ):
+        ref_occupations.post_process_read(tmp)
+
+    tmp.system.params["occupations"] = "from_input"
+    with pytest.raises(
+        ValueError,
+        match="The number of occupations must be equal to `nbnd`!",
+    ):
+        Occupations(occupations=np.ones((10,), dtype=float)).post_process_read(tmp)
+
+    tmp.system.params["nspin"] = 2
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "The number of occupations must be `2*nbnd` for a spin-polarized calculation!"
+        ),
+    ):
+        Occupations(occupations=np.ones((10,), dtype=float)).post_process_read(tmp)
+
+    del tmp.system.params["nbnd"]
+    with pytest.raises(
+        ValueError,
+        match="Can not set Occupations when `nbnd` is not specified!",
+    ):
+        Occupations(occupations=np.ones((10,), dtype=float)).post_process_read(tmp)
 
 
 def test_co2_constrained():

@@ -784,25 +784,21 @@ class CardBase(ABC):
     ) -> Self: ...
 
     def change_specifier(
-        self,
-        new_specifier: str,
-        pwi: PwscfInput,  # noqa: ARG002
-        *,
-        in_place: bool = True  # noqa: ARG002
+        self, new_specifier: str, pwi: PwscfInput, *, in_place: bool = True  # noqa: ARG002
     ) -> Self | None:
         msg = (
-            f"Can not change to {new_specifier}, "
-            f"no specifiers available for card {self.name.upper()}"
+            f"Can not change specifier for card type {type(self).__name__}, "
+            f"no specifiers available!"
         )
-        raise ValueError(msg)
+        raise RuntimeError(msg)
 
     @nxs_deprecate(since="2.4.9", replacement="change_specifier")
     def change_option(self,*args,**kwargs):
         self.change_specifier(*args,**kwargs)
 
     @classmethod
-    def from_phys_sys(self, phys_sys: PhysicalSystem | Structure, /, **kwargs: Any) -> Self:
-        msg = f"Can not create {type(self).__name__} card from a PhysicalSystem/Structure!"
+    def from_phys_sys(cls, phys_sys: PhysicalSystem | Structure, /, **kwargs: Any) -> Self:
+        msg = f"Can not create {cls.__name__} card from a PhysicalSystem/Structure!"
         raise NotImplementedError(msg)
 
     def update(self, **kwargs) -> None:
@@ -1267,7 +1263,7 @@ class AtomicVelocities(CardBase):
         n_vel = len(lines) - 1
         atoms = []
         velocities = np.empty((n_vel, 3), dtype=float)
-        for idx, l in enumerate(lines):
+        for idx, l in enumerate(lines[1:]):
             tokens = l.split()
             atoms.append(tokens[0])
             velocities[idx, :] = tokens[1:4]
@@ -1276,10 +1272,13 @@ class AtomicVelocities(CardBase):
 
     def write(self) -> str:
         text = f"{self.name.upper()}\n"
-        for atom, vel in zip(self.atoms, self.velocities, strict=True):
-            text += "    {:2} {:{f}} {:{f}} {:{f}}\n".format(
-                atom, *vel, f="16.8f",
-            )
+        lines = ""
+        for vel in self.velocities:
+            fmt = "16.10f"
+            lines += f"{vel[0]:{fmt}} {vel[1]:{fmt}} {vel[2]:{fmt}}\n"
+        lines = indent(dedent(lines), "   ")
+        for atom, line in zip(self.atoms, lines.splitlines(), strict=True):
+            text += f"    {atom:<2} {line}\n"
 
         return text
 
@@ -1702,7 +1701,7 @@ class CellParameters(CardBase):
             return
         elif s_low not in CellParameters.valid_specifiers:
             msg = (
-                f"Specifier {new_specifier} is not known to Nexus!\n"
+                f"Specifier {new_specifier!r} is not known to Nexus!\n"
                 f"Valid specifiers are {sorted(CellParameters.valid_specifiers)}"
             )
             raise ValueError(msg)
@@ -1757,7 +1756,6 @@ class Constraint(ABC):
     )
 
     name: ClassVar[ConstraintName]
-    constr_target: float | None
 
     @classmethod
     def _verify_types(cls, **kwargs: int | float) -> str | Literal[""]:
@@ -1772,7 +1770,11 @@ class Constraint(ABC):
             if "None" in dtype and value is None:
                 continue
 
-            if dtype == "int" and value.is_integer():
+            if (
+                dtype == "int"
+                and isinstance(value, int | float | np.integer | np.floating)
+                and value.is_integer()
+            ):
                 # Convert integer-value floats to ints
                 value = int(value)
 
@@ -1789,7 +1791,7 @@ class Constraint(ABC):
                 invalid = True
             if invalid:
                 msg += (
-                    f"Input '{key}' should have type {dtype} "
+                    f"Input `{key}` should have type {dtype} "
                     f"but has type {type(value).__name__}!\n"
                 )
 
@@ -1815,15 +1817,16 @@ class Constraint(ABC):
 class TypeCoordConstraint(Constraint):
     name = "type_coord"
 
-    atom_idx_1: int
-    atom_idx_2: int
+    atom_type_1: int
+    atom_type_2: int
     cutoff_radius: float
     smoothing: float
+    constr_target: float | None
 
     def __init__(
         self,
-        atom_idx_1: int,
-        atom_idx_2: int,
+        atom_type_1: int,
+        atom_type_2: int,
         cutoff_radius: float,
         smoothing: float,
         constr_target: float | None = None,
@@ -1832,8 +1835,8 @@ class TypeCoordConstraint(Constraint):
     ) -> None:
         if check:
             msg = type(self)._verify_types(
-                atom_idx_1=atom_idx_1,
-                atom_idx_2=atom_idx_2,
+                atom_type_1=atom_type_1,
+                atom_type_2=atom_type_2,
                 cutoff_radius=cutoff_radius,
                 smoothing=smoothing,
                 constr_target=constr_target,
@@ -1841,8 +1844,8 @@ class TypeCoordConstraint(Constraint):
             if len(msg) > 0:
                 raise TypeError(msg)
 
-        self.atom_idx_1 = int(atom_idx_1)
-        self.atom_idx_2 = int(atom_idx_2)
+        self.atom_type_1 = int(atom_type_1)
+        self.atom_type_2 = int(atom_type_2)
         self.cutoff_radius = cutoff_radius
         self.smoothing = smoothing
         self.constr_target = constr_target
@@ -1850,8 +1853,8 @@ class TypeCoordConstraint(Constraint):
     @property
     def values(self) -> list[int, int, float, float]:
         vals = [
-            self.atom_idx_1,
-            self.atom_idx_2,
+            self.atom_type_1,
+            self.atom_type_2,
             self.cutoff_radius,
             self.smoothing,
         ]
@@ -1861,8 +1864,54 @@ class TypeCoordConstraint(Constraint):
         return vals
 
 
-class AtomCoordConstraint(TypeCoordConstraint):
+class AtomCoordConstraint(Constraint):
     name = "atom_coord"
+
+    atom_idx: int
+    atom_type: int
+    cutoff_radius: float
+    smoothing: float
+    constr_target: float | None
+
+    def __init__(
+        self,
+        atom_idx: int,
+        atom_type: int,
+        cutoff_radius: float,
+        smoothing: float,
+        constr_target: float | None = None,
+        *,
+        check: bool = True,
+    ) -> None:
+        if check:
+            msg = type(self)._verify_types(
+                atom_idx=atom_idx,
+                atom_type=atom_type,
+                cutoff_radius=cutoff_radius,
+                smoothing=smoothing,
+                constr_target=constr_target,
+            )
+            if len(msg) > 0:
+                raise TypeError(msg)
+
+        self.atom_idx = int(atom_idx)
+        self.atom_type = int(atom_type)
+        self.cutoff_radius = cutoff_radius
+        self.smoothing = smoothing
+        self.constr_target = constr_target
+
+    @property
+    def values(self) -> list[int, int, float, float]:
+        vals = [
+            self.atom_idx,
+            self.atom_type,
+            self.cutoff_radius,
+            self.smoothing,
+        ]
+        if self.constr_target is not None:
+            vals.append(self.constr_target)
+
+        return vals
 
 
 class DistanceConstraint(Constraint):
@@ -1870,6 +1919,7 @@ class DistanceConstraint(Constraint):
 
     atom_idx_1: int
     atom_idx_2: int
+    constr_target: float | None
 
     def __init__(
         self,
@@ -1910,6 +1960,7 @@ class PlanarAngleConstraint(Constraint):
     atom_idx_1: int
     atom_idx_2: int
     atom_idx_3: int
+    constr_target: float | None
 
     def __init__(
         self,
@@ -1955,6 +2006,7 @@ class TorsionalAngleConstraint(Constraint):
     atom_idx_2: int
     atom_idx_3: int
     atom_idx_4: int
+    constr_target: float | None
 
     def __init__(
         self,
@@ -2002,6 +2054,7 @@ class BennettProjConstraint(Constraint):
 
     atom_idx: int
     vector: npt.NDArray[np.float64]
+    constr_target: float | None
 
     def __init__(
         self,
@@ -2052,7 +2105,6 @@ class PotentialWallConstraint(Constraint):
         prefactor: float,
         exponent: float,
         cutoff: float,
-        constr_target: float | None = None,
         *,
         check: bool = True,
     ) -> None:
@@ -2061,7 +2113,6 @@ class PotentialWallConstraint(Constraint):
                 prefactor=prefactor,
                 exponent=exponent,
                 cutoff=cutoff,
-                constr_target=constr_target,
             )
             if len(msg) > 0:
                 raise TypeError(msg)
@@ -2069,7 +2120,6 @@ class PotentialWallConstraint(Constraint):
         self.prefactor = prefactor
         self.exponent = exponent
         self.cutoff = cutoff
-        self.constr_target = constr_target
 
     @property
     def values(self) -> list[float, float, float]:
@@ -2078,8 +2128,6 @@ class PotentialWallConstraint(Constraint):
             self.exponent,
             self.cutoff,
         ]
-        if self.constr_target is not None:
-            vals.append(self.constr_target)
 
         return vals
 
@@ -2115,7 +2163,11 @@ class Constraints(CardBase):
         tolerance: float | None = None,
     ):
         if not all(isinstance(i, Constraint) for i in constraints):
-            msg = ""
+            msg = (
+                "Received non-constraint type in constraints list!\n"
+                "All values must be one of "
+                f"{", ".join(i.__name__ for i in Constraints.constraint_map.values())}"
+            )
             raise TypeError(msg)
 
         self.constraints = constraints
@@ -2137,7 +2189,7 @@ class Constraints(CardBase):
             cons_name = tokens[0].strip("'")
             if cons_name not in Constraints.constraint_map:
                 msg = (
-                    f"Constraint {cons_name} is not known to Nexus!\n"
+                    f"Constraint {cons_name!r} is not known to Nexus!\n"
                     f"Known constraints are {[*Constraints.constraint_map]}"
                 )
                 raise ValueError(msg)
@@ -2159,7 +2211,7 @@ class Constraints(CardBase):
                 )
             except Exception as exc:
                 exc.add_note(
-                    f"Constraint initialization failed for constraint {cons_type.__name__} "
+                    f"Constraint initialization failed for constraint type {cons_type.__name__!r} "
                     "with parameters:\n"
                     f"{"\n".join(map(str, cons_params))}"
                 )
@@ -2179,7 +2231,7 @@ class Constraints(CardBase):
         text = f"{self.name.upper()}\n"
         text += f"  {self.nconstraints}"
         if self.tolerance is not None:
-            text += f"  {self.tolerance:.8f}"
+            text += f"  {self.tolerance:e}"
         text += "\n"
 
         for cons in self.constraints:
@@ -2196,6 +2248,35 @@ class Constraints(CardBase):
                     text += f" {val:{fmt}}"
             text += "\n"
         return text
+
+    @classmethod
+    def from_mapping(
+        cls,
+        constraints: Mapping[ConstraintName, Mapping | Sequence[Mapping]],
+        tolerance: float | None = None,
+    ) -> Self:
+        """Create a :class:`Constraints` instance from a list of constraints as mappings."""
+        constrs = []
+        for cons_name, cons_values in constraints.items():
+            if cons_name.lower() not in cls.constraint_map:
+                msg = (
+                    f"Constraint {cons_name!r} is not known to Nexus!\n"
+                    f"Known constraints are {[*Constraints.constraint_map]}"
+                )
+                raise ValueError(msg)
+            cons_type = cls.constraint_map[cons_name.lower()]
+            if isinstance(cons_values, Mapping):
+                constrs.append(cons_type(**cons_values))
+            elif isinstance(cons_values, Sequence) and not isinstance(cons_values, str):
+                for cons_value in cons_values:
+                    constrs.append(cons_type(**cons_value))
+            else:
+                msg = (
+                    "Must provide a dict of input arguments or a list of dicts of inputs!\n"
+                    f"Received type {type(cons_values).__name__} for constraint {cons_name!r}"
+                )
+                raise TypeError(msg)
+        return cls(constraints=constrs, tolerance=tolerance)
 
 
 class Occupations(CardBase):
@@ -2231,6 +2312,9 @@ class Occupations(CardBase):
                 raise ValueError(msg)
 
             self.minority_spin_occs = np.asarray(minority_spin_occs, dtype=float)
+            if len(shape := self.minority_spin_occs.shape) != 1:
+                msg = f"Minority spin occupations must be a 1D array, but has shape {shape}!"
+                raise ValueError(msg)
         else:
             self.minority_spin_occs = minority_spin_occs
 
@@ -2244,22 +2328,34 @@ class Occupations(CardBase):
 
     def post_process_read(self, pwscf_input: PwscfInput) -> None:
         occupations = pwscf_input.system.params.get("occupations")
-        if occupations != "from_input":
-            msg = "Explicit occupations only available with 'occupations=from_input'!"
+        if occupations is None:
+            pwscf_input.system.params["occupations"] = "from_input"
+        elif occupations != "from_input":
+            msg = (
+                "Explicit occupations only available with `occupations=from_input`!\n"
+                f"Given `{occupations=}`"
+            )
             raise ValueError(msg)
 
         nspin = pwscf_input.system.params.get("nspin")
-        if nspin is None or nspin == 1:
-            return
 
         nbnd = pwscf_input.system.params.get("nbnd")
         if nbnd is None:
             msg = "Can not set Occupations when `nbnd` is not specified!"
             raise ValueError(msg)
+        elif (nspin is None or nspin == 1):
+            if (n_occs := len(self.occupations)) != nbnd:
+                msg = (
+                    "The number of occupations must be equal to `nbnd`!\n"
+                    f"Current `nbnd`:        {nbnd}\n"
+                    f"Number of Occupations: {n_occs}\n"
+                )
+                raise ValueError(msg)
+            return
         elif (n_occs := len(self.occupations)) / 2 != nbnd:
             msg = (
-                "The number of occupations must be '2*nbnd' for a spin-polarized calculation!\n"
-                f"Number of Bands:       {nbnd}\n"
+                "The number of occupations must be `2*nbnd` for a spin-polarized calculation!\n"
+                f"Current `nbnd`:        {nbnd}\n"
                 f"Number of Occupations: {n_occs}\n"
             )
             raise ValueError(msg)
