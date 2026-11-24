@@ -168,7 +168,7 @@ def assert_card_equals[T: CardBase](calc_card: T, ref_card: T) -> None:
     elif isinstance(calc_card, AtomicPositions) and isinstance(ref_card, AtomicPositions):
         assert(calc_card.specifier == ref_card.specifier)
         assert(calc_card.atoms == ref_card.atoms)
-        np.testing.assert_allclose(calc_card.positions, ref_card.positions, rtol=1e-6)
+        np.testing.assert_allclose(calc_card.positions, ref_card.positions, rtol=0, atol=1e-7)
         assert(type(calc_card.force_multipliers) is type(ref_card.force_multipliers))
         if calc_card.force_multipliers is not None:
             np.testing.assert_allclose(calc_card.force_multipliers, ref_card.force_multipliers)
@@ -653,7 +653,7 @@ ATOMIC_SPECIES
         NotAnElementError,
         match="Not all atoms supplied are elements!",
     ):
-        AtomicSpecies(["Bean"], masses=None, pseudos=pseudos)
+        AtomicSpecies(["Hy1"], masses=None, pseudos=pseudos)
 
     with pytest.raises(
         ValueError,
@@ -1997,7 +1997,7 @@ def test_change_specifier():
         system = System(
             ibrav = 4,
             a = 2.97887,
-            c = 1.88583,
+            c = 5.61765,
             nat = 2,
             ntyp = 1,
             ecutwfc = 80,
@@ -2011,8 +2011,8 @@ def test_change_specifier():
             atoms = ["C", "C"],
             positions = np.array(
                 [
-                    [0.33333333, 0.66666667, 0.25      ],
-                    [0.66666667, 0.33333333, 0.75      ],
+                    [1/3, 2/3, 1/4],
+                    [2/3, 1/3, 3/4],
                 ],
                 dtype=float,
             ),
@@ -2024,8 +2024,8 @@ def test_change_specifier():
         atoms = ["C", "C"],
         positions = np.array(
             [
-                [-2.81462426e-08,  3.25004814, 2.65395142],
-                [ 2.81462427e+00,  1.62502405, 7.96185425],
+                [0.0000000000, 3.2500481142, 2.6539549910],
+                [2.8146242304, 1.6250240571, 7.9618649730],
             ],
             dtype=float,
         ),
@@ -3095,7 +3095,7 @@ def test_cd_fractions():
     system = System(
         ibrav = 4,
         a = 2.97887,
-        c = 1.88583,
+        c = 5.61765,
         nat = 2,
         ntyp = 1,
         tot_charge = 0,
@@ -3152,7 +3152,7 @@ def test_cd_fractions():
         pseudo_dir = "./",
         ibrav = 4,
         a = 2.97887,
-        c = 1.88583,
+        c = 5.61765,
         nat = 2,
         ntyp = 1,
         tot_charge = 0,

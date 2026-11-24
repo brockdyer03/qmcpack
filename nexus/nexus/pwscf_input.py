@@ -23,6 +23,7 @@ import ast
 import difflib
 import inspect
 import logging
+import math
 import operator
 import re
 from abc import ABC, abstractmethod
@@ -876,15 +877,15 @@ class AtomicSpecies(CardBase):
         elem_order: list[str] | None = None,
         require_pseudos_exist: bool = True, # Really only should be disabled when reading from input
     ):
-        if not all(Elements.is_element(e) for e in atoms):
-            msg = "Not all atoms supplied are elements!"
-            raise NotAnElementError(msg)
-        elif any(len(a) > 3 for a in atoms):
+        if any(len(a) > 3 for a in atoms):
             msg = (
                 "Atoms with labels longer than 3 characters are not allowed by QE!\n"
                 f"Invalid Labels: {[a for a in atoms if len(a) > 3]}"
             )
             raise ValueError(msg)
+        elif not all(Elements.is_element(e) for e in atoms):
+            msg = "Not all atoms supplied are elements!"
+            raise NotAnElementError(msg)
 
         if masses is None:
             masses = {}
@@ -1069,9 +1070,15 @@ def algebra_eval(expr: str) -> float:
             "Will not parse expression with a length greater than 50!\n"
             f"Expression: {expr!r}"
         )
+        raise ValueError(msg)
     expr = expr.replace("^", "**")  # QE uses ^ instead of ** for powers.
     node = ast.parse(expr, "<string>", "eval").body
-    return _algebra_eval(node)
+    val = _algebra_eval(node)
+    if math.isinf(val) or math.isnan(val):
+        msg = f"Expression {expr!r} evaluated to {val!r}!"
+        raise ValueError(msg)
+    else:
+        return val
 
 
 class AtomicPositions(CardBase):
@@ -1429,7 +1436,7 @@ def _kmesh_from_kpts(
             ~(kpoints[:, 1] == 0).any(),
             ~(kpoints[:, 2] == 0).any(),
         ],
-        dtype=int,
+        dtype=float,
     )
 
     if (
@@ -1540,9 +1547,9 @@ class KPoints(CardBase):
                 msg = "Must provide both `grid` and `shift`!"
                 raise ValueError(msg)
 
-            if not all(i.is_integer() for i in grid):
+            if not all(i.is_integer() and i > 0 for i in grid):
                 msg = (
-                    "All grid values must be integers!\n"
+                    "All grid values must be positive integers!\n"
                     f"Values: {grid}"
                 )
                 raise ValueError(msg)
@@ -4682,8 +4689,11 @@ class PwscfInput(SimulationInput):
                 a = self.alat
                 if (celldm := self.system.params.get("celldm")) is not None:
                     c = celldm[3] * a
+                elif "c" in self.system.params:
+                    c = convert(self.system.params["c"], "A", "B")
                 else:
-                    c = self.system.params["c"] * a
+                    msg = f"`{self.system.ibrav=}` but no `celldm` or `c` value is in `&SYSTEM`!"
+                    raise RuntimeError(msg)
                 return np.array(
                     [
                         [a, 0, 0],

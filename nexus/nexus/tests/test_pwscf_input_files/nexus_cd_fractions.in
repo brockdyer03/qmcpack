@@ -13,7 +13,7 @@
 &SYSTEM
     ibrav      = 4,
     a          = 2.97887,
-    c          = 1.88583,
+    c          = 5.61765,
     nat        = 2,
     ntyp       = 1,
     tot_charge = 0,
