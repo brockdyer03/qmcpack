@@ -358,10 +358,10 @@ class Pwscf(Simulation):
         elif calc=='scf':
             k_points = self.input.k_points
             nkpoints = 1
-            if 'grid' in k_points and k_points.grid==(1,1,1):
+            if k_points.grid==(1,1,1):
                 nkpoints = 1
-            elif 'kpoints' in self.input.k_points:
-                nkpoints = len(self.input.k_points.kpoints)
+            elif k_points.kpoints is not None:
+                nkpoints = len(k_points.kpoints)
             nosym = True
             if 'nosym' in self.input.system:
                 nosym = self.input.system.nosym
@@ -454,7 +454,7 @@ class Pwscf(Simulation):
         self.system.structure = struct
         self.system.remove_folded()
         input = self.input
-        preserve_kp = 'k_points' in input and 'specifier' in input.k_points and (input.k_points.specifier=='automatic' or input.k_points.specifier=='gamma')
+        preserve_kp = 'k_points' in input and input.k_points.specifier in {'automatic', 'gamma'}
         if preserve_kp:
             kp = deepcopy(input.k_points)
         input.incorporate_system(self.system)

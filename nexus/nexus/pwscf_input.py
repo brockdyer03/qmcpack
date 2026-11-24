@@ -170,10 +170,10 @@ def _with_accepted_types(
         raise ValueError(msg)
 
 
-def _get_array_params(deftype: NamelistDefType) -> tuple[str]:
+def _get_array_params(deftype: NamelistDefType) -> tuple[str, ...]:
     return tuple(i.name for i in deftype if i.shape is not None)
 
-def _get_namelist_names(deftype: NamelistDefType) -> tuple[str]:
+def _get_namelist_names(deftype: NamelistDefType) -> tuple[str, ...]:
     return tuple(i.name for i in deftype)
 
 class NamelistBase:
@@ -260,6 +260,8 @@ class NamelistBase:
                 msg += ", no checks will be performed"
                 warn(msg)
                 return # Return early since we can't do the rest of the checks.
+            else:
+                return
 
         msg = (
             "The parameter `" + name + "` has the incorrect {attr}!\n"
@@ -889,11 +891,16 @@ class AtomicSpecies(CardBase):
                 _, elem = Elements.is_element(ion_label, return_element=True)
                 pseudos[ion_label] = psps[elem.symbol]
 
-        if set(atoms) != set(masses) != set(pseudos):
-            msg = "Atoms, masses, and pseudos must all have the same atoms!"
+        species = set(atoms)
+        if species != set(masses) or species != set(pseudos):
+            msg = (
+                "Atoms, masses, and pseudos must all have the same atoms!\n"
+                f"Atoms:   {species}\n"
+                f"Masses:  {set(masses)}\n"
+                f"Pseudos: {set(pseudos)}"
+            )
             raise ValueError(msg)
 
-        species = set(atoms)
         if elem_order is not None:
             if len(missing := set(elem_order) - species) > 0:
                 msg = (
@@ -3819,7 +3826,7 @@ class PwscfInputParser:
 
     decimal: Literal["point", "comma"]
     delim: Literal["quotes", "none"]
-    patterns: dict[Literal["number", "bool", "complex", "string", "group"], Pattern]
+    patterns: dict[Literal["number", "bool", "complex", "string", "namelist"], Pattern]
 
     def __init__(
         self,
@@ -3956,7 +3963,7 @@ class PwscfInputParser:
                 else:
                     return value
             elif dtype == "bool":
-                return value in {".true.", ".t", "t"}
+                return value.lower() in {".true.", ".t", "t"}
             elif dtype == "complex":
                 value = value.strip("()")
                 sep = "," if self.decimal == "point" else ";"
@@ -4378,7 +4385,11 @@ class PwscfInput(SimulationInput):
             raise RuntimeError(msg)
 
         if self.constraints is not None:
-            ion_dynamics = self.ions.params.get("ion_dynamics")
+            if self.ions is not None:
+                ion_dynamics = self.ions.params.get("ion_dynamics")
+            else:
+                msg = "Constraints card was provided but the &IONS namelist is missing!"
+                raise RuntimeError(msg)
             if ion_dynamics not in {"damp", "verlet", "velocity-verlet"}:
                 msg = (
                     "`ion_dynamics` must be one of 'damp','verlet' or "
@@ -4674,6 +4685,9 @@ def generate_pwscf_input(
         defaults = None
 
     if "ecut" in kwargs:
+        if "ecutwfc" in kwargs:
+            msg = "Both `ecut` and `ecutwfc` encountered in input! Please only pass `ecutwfc`!"
+            raise ValueError(msg)
         warn(
             "Passing `ecut` is deprecated and will not be allowed in the future! "
             "Please use `ecutwfc` instead!",
@@ -5017,7 +5031,7 @@ def generate_pwscf_input(
         )
 
     if kpts_specifier is not None:
-        k_points_card.change_specifier(
+        pwscf_input.k_points.change_specifier(
             kpts_specifier,
             pwscf_input,
             in_place=True,

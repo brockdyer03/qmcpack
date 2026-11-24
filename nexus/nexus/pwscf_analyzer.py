@@ -1590,7 +1590,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
             cell       = deepcopy(input_data.cell_parameters)
             positions  = np.asarray(input_data.atomic_positions.positions,dtype=float)
             cell.change_specifier('bohr',input_data)
-            axes = np.asarray(cell.vectors,dtype=float)
+            axes = np.asarray(cell.axes,dtype=float)
             specifier = input_data.atomic_positions.specifier
             if specifier in {'alat',''}:
                 scale = input_data.alat
@@ -1672,9 +1672,7 @@ class PwscfAnalyzer(SimulationAnalyzer):
             ):
             system = self.input.system
             scale  = None
-            if 'celldm(1)' in system:
-                scale = system['celldm(1)']
-            elif 'celldm' in system and 1 in system.celldm:
+            if 'celldm' in system and 1 in system.celldm:
                 scale = system.celldm[1]
             if scale is not None:
                 kpoints = self.results_out.kpoints_cart*2*np.pi/scale
