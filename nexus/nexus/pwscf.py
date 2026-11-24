@@ -356,16 +356,10 @@ class Pwscf(Simulation):
         if calc=='nscf':
             self.produces.add('orbitals')
         elif calc=='scf':
-            k_points = self.input.k_points
-            nkpoints = 1
-            if k_points.grid==(1,1,1):
-                nkpoints = 1
-            elif k_points.kpoints is not None:
-                nkpoints = len(k_points.kpoints)
             nosym = True
             if 'nosym' in self.input.system:
                 nosym = self.input.system.nosym
-            if nkpoints==1 or not nosym:
+            if self.input.k_points.nkpoints == 1 or not nosym:
                 self.produces.add('orbitals')
 
         # structure
