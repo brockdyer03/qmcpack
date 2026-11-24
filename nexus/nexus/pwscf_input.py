@@ -1048,7 +1048,14 @@ class AtomicPositions(CardBase):
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
-        specifier = lines[0].split()[1].strip("{}()").lower()
+        specifier = lines[0].split()
+        if len(specifier) == 1:
+            LOGGER.debug(
+                "Assuming 'alat' specifier for ATOMIC_POSITIONS card without specifier"
+            )
+            specifier = "alat"
+        else:
+            specifier = specifier[1].strip("{}()").lower()
         npos = len(lines[1:])
         atoms = []
         positions = np.empty((npos, 3), dtype=float)
@@ -1306,10 +1313,15 @@ def _kmesh_from_kpts(
         [np.unique_values(kpoints[:, i]).size for i in range(3)],
         dtype=int
     )
-    if not (kpoints == 0).any():
-        shift = np.ones((3,))
-    else:
-        shift = np.zeros((3,))
+    # If there are no zeros in a column, it was shifted.
+    shift = np.array(
+        [
+            ~(kpoints[:, 0] == 0).any(),
+            ~(kpoints[:, 1] == 0).any(),
+            ~(kpoints[:, 2] == 0).any(),
+        ],
+        dtype=int,
+    )
 
     if (
         np.prod(grid) != len(kpoints)
@@ -1454,8 +1466,14 @@ class KPoints(CardBase):
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
-        specifier = lines[0].split()[1].strip("{}()").lower()
-        specifier = specifier if specifier != "" else "tpiba"
+        specifier = lines[0].split()
+        if len(specifier) == 1:
+            LOGGER.debug(
+                "Assuming 'tpiba' specifier for K_POINTS card without specifier"
+            )
+            specifier = "tpiba"
+        else:
+            specifier = specifier[1].strip("{}()").lower()
 
         if specifier not in cls.valid_specifiers:
             msg = (
@@ -2209,7 +2227,11 @@ class Constraints(CardBase):
                         float(tokens[5]),
                     )
                 else:
-                    cons_params = (float(tokens[1]), np.array(tokens[1:4], dtype=float))
+                    cons_params = (
+                        float(tokens[1]),
+                        np.array(tokens[2:5], dtype=float),
+                        None,
+                    )
             else:
                 cons_params = tuple(float(i) for i in tokens[1:])
             try:
@@ -2472,7 +2494,12 @@ class Solvents(CardBase):
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
-        specifier = lines[0].split()[1].strip("{}()").lower()
+        specifier = lines[0].split()
+        if len(specifier) == 1:
+            msg = "No specifier given for SOLVENTS card!"
+            raise FileFormatError(msg)
+        else:
+            specifier = specifier[1].strip("{}()").lower()
         labels = []
         dens = [] # Either only density or left density
         dens_right = []
@@ -3483,13 +3510,12 @@ class Hubbard(CardBase):
 
     @classmethod
     def read(cls, lines: list[str]) -> Self:
-        specifier = lines[0].split()[1].strip("{}()").lower()
-        if specifier not in Hubbard.valid_specifiers:
-            msg = (
-                f"Invalid specifier '{specifier}' for Hubbard card!\n"
-                f"Valid specifiers are {sorted(Hubbard.valid_specifiers)}"
-            )
-            raise ValueError(msg)
+        specifier = lines[0].split()
+        if len(specifier) == 1:
+            msg = "No specifier found for HUBBARD card!"
+            raise FileFormatError(msg)
+        else:
+            specifier = specifier[1].strip("{}()").lower()
 
         dft_u = False
         dft_uj = False
@@ -3872,6 +3898,12 @@ class PwscfInputParser:
             line = line.lstrip()
             if line.lower().startswith(tuple(PwscfInput.card_types)) and "=" not in line:
                 at_cards = True
+            elif line.lower().startswith(("collective_vars", "climbing_images")):
+                msg = (
+                    f"Can not parse legacy card {line!r}!\n"
+                    "Only QE 7.0-7.6 are currently supported!"
+                )
+                raise RuntimeError(msg)
 
             if not at_cards:
                 nmlist_lines += line
@@ -3954,12 +3986,6 @@ class PwscfInputParser:
                     msg = f"Encountered duplicate instance of '{current_card.title()}' card!"
                     raise FileFormatError(msg)
                 cards[current_card] = []
-            elif line.lower().startswith(("collective_vars", "climbing_images")):
-                msg = (
-                    f"Can not parse legacy card {line!r}!\n"
-                    "Only QE 7.0-7.6 are currently supported!"
-                )
-                raise RuntimeError(msg)
 
             if current_card is not None and line != "":
                 cards[current_card].append(line)
