@@ -3881,8 +3881,23 @@ class PwscfInputParser:
         groups = {}
 
         # Move multiple variables on the same line separated by a comma
-        # onto separate lines
-        nmlist_lines = re.sub(r",([^0-9\n])", r",\n\1", nmlist_lines)
+        # onto separate lines, except commas inside strings.
+        nmlist_lines = re.sub(
+            r"(?!\B(?:\"|')[^\"']*),(?![^\"']*(?:\"|')\B)([^0-9\n])",
+            r",\n\1",
+            nmlist_lines,
+        )
+        # Split single-line namelists onto multiple lines
+        nmlist_lines = re.sub(
+            r"((?i:^&[a-zA-Z$][\w$]*))",
+            r"\1\n",
+            nmlist_lines,
+        )
+        nmlist_lines = re.sub(
+            r"/\n",
+            r"\n/\n",
+            nmlist_lines,
+        )
         for line in nmlist_lines.splitlines():
             if line.strip() == "":
                 continue
@@ -3890,6 +3905,7 @@ class PwscfInputParser:
                 if current_group is not None:
                     msg = "Encountered new namelist before termination of previous namelist!\n"
                     raise FileFormatError(msg)
+
                 current_group = nmlist_match.group()
                 if (
                     (nmlist := current_group.removeprefix("&").lower())
@@ -3901,7 +3917,7 @@ class PwscfInputParser:
                 else:
                     msg = f"Encountered unknown namelist '{current_group}'!"
                     raise FileFormatError(msg)
-            elif line == "/":
+            elif line.strip() == "/":
                 current_group = None
                 continue
             elif current_group is None:
@@ -3938,6 +3954,12 @@ class PwscfInputParser:
                     msg = f"Encountered duplicate instance of '{current_card.title()}' card!"
                     raise FileFormatError(msg)
                 cards[current_card] = []
+            elif line.lower().startswith(("collective_vars", "climbing_images")):
+                msg = (
+                    f"Can not parse legacy card {line!r}!\n"
+                    "Only QE 7.0-7.6 are currently supported!"
+                )
+                raise RuntimeError(msg)
 
             if current_card is not None and line != "":
                 cards[current_card].append(line)
