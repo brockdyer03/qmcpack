@@ -879,6 +879,12 @@ class AtomicSpecies(CardBase):
         if not all(Elements.is_element(e) for e in atoms):
             msg = "Not all atoms supplied are elements!"
             raise NotAnElementError(msg)
+        elif any(len(a) > 3 for a in atoms):
+            msg = (
+                "Atoms with labels longer than 3 characters are not allowed by QE!\n"
+                f"Invalid Labels: {[a for a in atoms if len(a) > 3]}"
+            )
+            raise ValueError(msg)
 
         if masses is None:
             masses = {}
@@ -1530,9 +1536,26 @@ class KPoints(CardBase):
             ]
             if len(ignored) > 0:
                 LOGGER.debug(wmsg.format(ign=ignored, spec=self.specifier))
+            if grid is None or shift is None:
+                msg = "Must provide both `grid` and `shift`!"
+                raise ValueError(msg)
 
+            if not all(i.is_integer() for i in grid):
+                msg = (
+                    "All grid values must be integers!\n"
+                    f"Values: {grid}"
+                )
+                raise ValueError(msg)
             self.grid = np.asarray(grid, dtype=int)
+
+            if not all(i in {0, 1} for i in shift):
+                msg = (
+                    "All shift values must be 0 or 1!\n"
+                    f"Values: {shift}"
+                )
+                raise ValueError(msg)
             self.shift = np.asarray(shift, dtype=int)
+
 
             if (bad := self.grid.shape) != (3,):
                 msg = emsg.format(var="grid", shp=(3,), bad=bad)
@@ -4536,6 +4559,11 @@ class PwscfInput(SimulationInput):
             raise RuntimeError(msg)
 
         if self.constraints is not None:
+            calculation = self.control.params.get("calculation")
+            if calculation in {"vc-relax", "vc-md"}:
+                msg = f"Constraints card was provided but `{calculation=}`!"
+                raise RuntimeError(msg)
+
             if self.ions is not None:
                 ion_dynamics = self.ions.params.get("ion_dynamics")
             else:
