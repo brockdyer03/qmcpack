@@ -4509,7 +4509,7 @@ class PwscfInput(SimulationInput):
         if (celldm := self.system.params.get("celldm")) is not None:
             return celldm[1]
         elif (alat := self.system.params.get("a")) is not None:
-            return alat
+            return convert(alat, "A", "B")
         else:
             return 1.0
 
@@ -4525,7 +4525,7 @@ class PwscfInput(SimulationInput):
             else:
                 return axes
         elif self.system.ibrav == 1:
-            return self.alat * np.eye((3, 3), dtype=float)
+            return self.alat * np.eye(3, dtype=float)
         else:
             msg = f"Can not retrieve axes with `{self.system.ibrav=}`!"
             raise ValueError(msg)
@@ -4697,7 +4697,11 @@ def generate_pwscf_input(
     **kwargs: PwscfInputType,
 ) -> PwscfInput:
     if "input_type" in kwargs or "selector" in kwargs:
-        input_type = kwargs["selector"] if "selector" in kwargs else kwargs["input_type"]
+        if "selector" in kwargs:
+            input_type = kwargs.pop("selector")
+        else:
+            input_type = kwargs.pop("input_type")
+
         if input_type == "generic":
             warn(
                 "Passing `input_type`/`selector` is deprecated, please remove from your script!",
