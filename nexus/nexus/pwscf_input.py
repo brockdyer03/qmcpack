@@ -19,9 +19,11 @@ CardBase
 """
 from __future__ import annotations
 
+import ast
 import difflib
 import inspect
 import logging
+import operator
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
@@ -87,7 +89,13 @@ type CardName = Literal[
     "occupations",
     "hubbard",
 ]
-type AtomicPositionsSpecifier = Literal["alat", "bohr", "angstrom", "crystal"]
+type AtomicPositionsSpecifier = Literal[
+    "alat",
+    "bohr",
+    "angstrom",
+    "crystal",
+    "crystal_sg",
+]
 type KPointsSpecifier = Literal[
     "tpiba",
     "crystal",
@@ -353,6 +361,7 @@ class NamelistBase:
         This is what the conversion looks like:
 
         .. code-block:: python
+
             value = [
                 "a",
                 "b",
@@ -540,25 +549,26 @@ class NamelistBase:
     ) -> dict[str, PwscfInputType]:
         """Join array parameters supplied as separate arguments.
 
-        .. code-block:: python
-            >>> params = {
-            ...     'starting_ns_eigenvalue(1,2,1)' : 0.0,
-            ...     'starting_ns_eigenvalue(2,2,1)' : 0.0476060,
-            ...     'starting_ns_eigenvalue(3,2,1)' : 0.0476060,
-            ...     'starting_ns_eigenvalue(4,2,1)' : 0.9654373,
-            ...     'starting_ns_eigenvalue(5,2,1)' : 0.9954307,
-            ... }
-            >>> normalized = System.join_array_params(params)
-            >>> pprint.pp(normalized, indent=4, expand=True)
-            {
-                'starting_ns_eigenvalue': {
-                    (1, 2, 1): 0.0,
-                    (2, 2, 1): 0.047606,
-                    (3, 2, 1): 0.047606,
-                    (4, 2, 1): 0.9654373,
-                    (5, 2, 1): 0.9954307,
-                },
-            }
+        Examples
+        --------
+        >>> params = {
+        ...     'starting_ns_eigenvalue(1,2,1)' : 0.0,
+        ...     'starting_ns_eigenvalue(2,2,1)' : 0.0476060,
+        ...     'starting_ns_eigenvalue(3,2,1)' : 0.0476060,
+        ...     'starting_ns_eigenvalue(4,2,1)' : 0.9654373,
+        ...     'starting_ns_eigenvalue(5,2,1)' : 0.9954307,
+        ... }
+        >>> normalized = System.join_array_params(params)
+        >>> pprint.pp(normalized, indent=4, expand=True)
+        {
+            'starting_ns_eigenvalue': {
+                (1, 2, 1): 0.0,
+                (2, 2, 1): 0.047606,
+                (3, 2, 1): 0.047606,
+                (4, 2, 1): 0.9654373,
+                (5, 2, 1): 0.9954307,
+            },
+        }
         """
         normalized = {}
         for arr_name in cls.array_params:
@@ -796,6 +806,12 @@ class CardBase(ABC):
 
     @nxs_deprecate(since="2.4.9", replacement="change_specifier")
     def change_option(self,*args,**kwargs):
+        """DEPRECATED Legacy interface to :meth:`change_specifier`.
+
+        .. deprecated:: 2.4.9
+
+            This is replaced by `change_specifier`.
+        """
         self.change_specifier(*args,**kwargs)
 
     @classmethod
@@ -979,6 +995,79 @@ class AtomicSpecies(CardBase):
         return len(self.atoms)
 
 
+def _algebra_eval(node: ast.Constant | ast.BinOp | ast.UnaryOp) -> float:
+    if isinstance(node, ast.Constant):
+        val = node.value
+        if not isinstance(val, int | float) or isinstance(val, bool):
+            msg = f"Can not parse value {val!r} that is not an integer or float!"
+            raise TypeError(msg)
+        return val
+    elif isinstance(node, ast.BinOp):
+        op_typ = type(node.op)
+        if op_typ is ast.Add:
+            op = operator.add
+        elif op_typ is ast.Sub:
+            op = operator.sub
+        elif op_typ is ast.Mult:
+            op = operator.mul
+        elif op_typ is ast.Div:
+            op = operator.truediv
+        elif op_typ is ast.Pow:
+            op = operator.pow
+        else:
+            msg = f"Encountered invalid binary operator {node.op!r} in QE input!"
+            raise FileFormatError(msg)
+        left = _algebra_eval(node.left)
+        right = _algebra_eval(node.right)
+        if isinstance(node.op, ast.Pow) and right > 20:
+            msg = "Exponentiation to a power greater than 20 is not allowed!"
+            raise RuntimeError(msg)
+        return op(left, right)
+    elif isinstance(node, ast.UnaryOp):
+        if type(node.op) is ast.USub:
+            return operator.neg(_algebra_eval(node.operand))
+        elif type(node.op) is ast.UAdd:
+            return _algebra_eval(node.operand)
+        else:
+            msg = f"Encountered invalid unary operator {node.op!r} in QE input!"
+            raise FileFormatError(msg)
+    else:
+        msg = f"Encountered an invalid type {type(node)} in expression! Value: {node!r}"
+        raise FileFormatError(msg)
+
+
+def algebra_eval(expr: str) -> float:
+    """Safe evaluation of simple algebraic expressions.
+
+    Examples
+    --------
+    Evaluate :math:`\\frac{1}{2}`.
+
+    >>> algebra_eval("1/2")
+    0.5
+
+    Evaluate :math:`\\frac{1}{2\\sqrt{3}}`.
+
+    >>> algebra_eval("1/2*3^(-1/2)")
+    0.28867513459481287
+    """
+    expr = expr.strip()
+    if " " in expr:
+        msg = (
+            "Will not parse expression with spaces inside!\n"
+            f"Expression: {expr!r}"
+        )
+        raise ValueError(msg)
+    elif len(expr) > 50:
+        msg = (
+            "Will not parse expression with a length greater than 50!\n"
+            f"Expression: {expr!r}"
+        )
+    expr = expr.replace("^", "**")  # QE uses ^ instead of ** for powers.
+    node = ast.parse(expr, "<string>", "eval").body
+    return _algebra_eval(node)
+
+
 class AtomicPositions(CardBase):
     """Atomic positions card in a :class:`PwscfInput` [1]_.
 
@@ -989,7 +1078,7 @@ class AtomicPositions(CardBase):
 
     name = "atomic_positions"
 
-    valid_specifiers = frozenset({"alat", "bohr", "angstrom", "crystal"})
+    valid_specifiers = frozenset({"alat", "bohr", "angstrom", "crystal", "crystal_sg"})
 
     specifier: AtomicPositionsSpecifier
     atoms: list[str]
@@ -1063,7 +1152,21 @@ class AtomicPositions(CardBase):
         for idx, l in enumerate(lines[1:]):
             tokens = l.split()
             atoms.append(tokens[0])
-            positions[idx,:] = np.array(tokens[1:4], dtype=float)
+            if any(not i.isdigit() for i in tokens[1:4]):
+                try:
+                    position = np.array(
+                        [algebra_eval(v) for v in tokens[1:4]],
+                        dtype=float,
+                    )
+                except Exception as exc:
+                    exc.add_note(
+                        f"Failed to parse line #{idx+1} with content {l!r}"
+                    )
+                    raise
+
+                positions[idx, :] = position
+            else:
+                positions[idx, :] = np.array(tokens[1:4], dtype=float)
             if len(tokens) == 7:
                 force_multipliers[idx,:] = np.array(tokens[4:7], dtype=int)
 
@@ -4516,19 +4619,54 @@ class PwscfInput(SimulationInput):
     @property
     def axes(self) -> npt.NDArray[np.float64]:
         """Return cell axes in units of Bohr"""
-        if self.system.ibrav == 0:
-            axes = np.asarray(self.cell_parameters.axes, dtype=float)
-            if self.cell_parameters.specifier == "alat":
-                return self.alat * axes
-            elif self.cell_parameters.specifier == "angstrom":
-                return convert(axes, "A", "B")
-            else:
-                return axes
-        elif self.system.ibrav == 1:
-            return self.alat * np.eye(3, dtype=float)
-        else:
-            msg = f"Can not retrieve axes with `{self.system.ibrav=}`!"
-            raise ValueError(msg)
+        match self.system.ibrav:
+            case 0:
+                axes = np.asarray(self.cell_parameters.axes, dtype=float)
+                if self.cell_parameters.specifier == "alat":
+                    return self.alat * axes
+                elif self.cell_parameters.specifier == "angstrom":
+                    return convert(axes, "A", "B")
+                else:
+                    return axes
+            case 1: # Simple Cubic
+                return self.alat * np.eye(3, dtype=float)
+            case 2: # Face-Centered Cubic
+                cell = np.array(
+                    [
+                        [-1,  0,  1],
+                        [ 0,  1,  1],
+                        [-1,  1,  0],
+                    ],
+                    dtype=float,
+                )
+                return (self.alat / 2) * cell
+            case 3: # Body-Centered Cubic
+                cell = np.array(
+                    [
+                        [ 1,  1,  1],
+                        [-1,  1,  1],
+                        [-1, -1,  1],
+                    ],
+                    dtype=float,
+                )
+                return (self.alat / 2) * cell
+            case 4: # Hexagonal
+                a = self.alat
+                if (celldm := self.system.params.get("celldm")) is not None:
+                    c = celldm[3] * a
+                else:
+                    c = self.system.params["c"] * a
+                return np.array(
+                    [
+                        [a, 0, 0],
+                        [-a / 2, a * np.sqrt(3) / 2, 0],
+                        [0, 0, c],
+                    ],
+                    dtype=float,
+                )
+            case _:
+                msg = f"Can not retrieve axes with `{self.system.ibrav=}`!"
+                raise ValueError(msg)
 
     @property
     def kaxes(self) -> npt.NDArray[np.float64]:

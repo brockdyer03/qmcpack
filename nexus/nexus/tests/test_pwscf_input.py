@@ -72,6 +72,7 @@ TEST_FILES = {
     "h2o_nacl_rism.in": TEST_DIR / "test_pwscf_input_files/h2o_nacl_rism.in",
     "nexus_water_forces.in": TEST_DIR / "test_pwscf_input_files/nexus_water_forces.in",
     "nexus_oxygen_occupations.in": TEST_DIR / "test_pwscf_input_files/nexus_oxygen_occupations.in",
+    "nexus_cd_fractions.in": TEST_DIR / "test_pwscf_input_files/nexus_cd_fractions.in",
     "README": TEST_DIR / "test_pwscf_input_files/README",
     "pseudos": (TEST_DIR / "../examples/qmcpack/pseudopotentials/").resolve(),
 }
@@ -735,6 +736,26 @@ ATOMIC_POSITIONS (angstrom)
     # the specifier change, we can safely pass None here.
     calc_at_pos = ref_at_pos.change_specifier("bohr", None, in_place=False)
     assert_card_equals(calc_at_pos, ref_bohr_at_pos)
+
+    ref_frac = AtomicPositions(
+        atoms = ["Cd", "Cd"],
+        positions = np.array(
+            [
+                [1/3, 2/3, 1/4],
+                [2/3, 1/3, 3/4],
+            ],
+            dtype=float,
+        ),
+        specifier="crystal",
+    )
+
+    frac_text = """\
+ATOMIC_POSITIONS (crystal)
+    Cd    1/3    2/3    1/4
+    Cd    2/3    1/3    3/4
+"""
+
+    assert_card_equals(AtomicPositions.read(frac_text.splitlines()), ref_frac)
 
     with pytest.raises(
         ValueError,
@@ -1750,9 +1771,7 @@ def test_pwscf_input(phys_sys):
 
 
 def test_change_specifier():
-    ref_control = Control(calculation   = "scf")
     ref_system = System(ibrav=0, nat=3, ntyp=3, ecutwfc=100)
-    ref_electrons = Electrons(conv_thr=1.0e-8, mixing_beta=0.7, diagonalization="david")
     ref_atomic_species = AtomicSpecies(
         atoms   = ["C", "H", "O"],
         masses  = {"C": 12.011, "H": 1.008, "O": 15.999},
@@ -1791,9 +1810,9 @@ def test_change_specifier():
     )
     pwi = PwscfInput(
         phys_sys=phys_sys,
-        control=ref_control,
+        control=Control(),
         system=ref_system,
-        electrons=ref_electrons,
+        electrons=Electrons(),
         atomic_species=ref_atomic_species,
         atomic_positions=ref_atomic_positions,
         k_points=ref_k_points,
@@ -1972,6 +1991,56 @@ def test_change_specifier():
         "crystal", pwi, in_place=False
     )
     assert_card_equals(bohr_to_crystal, ref_at_pos_crystal)
+
+    pwi_crystal = PwscfInput(
+        control = Control(),
+        system = System(
+            ibrav = 4,
+            a = 2.97887,
+            c = 1.88583,
+            nat = 2,
+            ntyp = 1,
+            ecutwfc = 80,
+        ),
+        electrons = Electrons(),
+        atomic_species = AtomicSpecies(
+            atoms=["C"], masses=None, pseudos={"C": "C.BFD.upf"},
+        ),
+        atomic_positions = AtomicPositions(
+            specifier = "crystal",
+            atoms = ["C", "C"],
+            positions = np.array(
+                [
+                    [0.33333333, 0.66666667, 0.25      ],
+                    [0.66666667, 0.33333333, 0.75      ],
+                ],
+                dtype=float,
+            ),
+        ),
+        k_points = KPoints("gamma"),
+    )
+    ref_at_pos_bohr = AtomicPositions(
+        specifier = "bohr",
+        atoms = ["C", "C"],
+        positions = np.array(
+            [
+                [-2.81462426e-08,  3.25004814, 2.65395142],
+                [ 2.81462427e+00,  1.62502405, 7.96185425],
+            ],
+            dtype=float,
+        ),
+    )
+    ref_at_pos_ang = ref_at_pos_bohr.change_specifier("angstrom", None, in_place=False)
+
+    crys_to_bohr = pwi_crystal.atomic_positions.change_specifier(
+        "bohr", pwi_crystal, in_place=False,
+    )
+    assert_card_equals(crys_to_bohr, ref_at_pos_bohr)
+
+    crys_to_ang = pwi_crystal.atomic_positions.change_specifier(
+        "angstrom", pwi_crystal, in_place=False,
+    )
+    assert_card_equals(crys_to_ang, ref_at_pos_ang)
 
 
 def test_occupations():
@@ -3006,6 +3075,101 @@ def test_water_forces():
                 [-0.00176899, -0.00998788,  0.00000000],
             ],
         ),
+    )
+    assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
+
+
+def test_cd_fractions():
+    register_pseudo_files(["cd_pbesol_v1.uspp.F.UPF"])
+    control = Control(
+        calculation = "scf",
+        nstep = 100,
+        tprnfor = True,
+        outdir = "scf_output",
+        prefix = "scf",
+        max_seconds = 1200,
+        etot_conv_thr = 1e-06,
+        forc_conv_thr = 0.0001,
+        pseudo_dir = "./",
+    )
+    system = System(
+        ibrav = 4,
+        a = 2.97887,
+        c = 1.88583,
+        nat = 2,
+        ntyp = 1,
+        tot_charge = 0,
+        ecutwfc = 80,
+        ecutrho = 320,
+        input_dft = "pbe",
+    )
+    electrons = Electrons(conv_thr=1e-07)
+    atomic_species = AtomicSpecies(
+        atoms = ["Cd"],
+        masses = {"Cd": 112.414},
+        pseudos = {"Cd": PseudoSet.pseudo_files["cd_pbesol_v1.uspp.F.UPF"]},
+    )
+    atomic_positions = AtomicPositions(
+        specifier = "crystal",
+        atoms = ["Cd", "Cd"],
+        positions = np.array(
+            [
+                [1/3, 2/3, 1/4],
+                [2/3, 1/3, 3/4],
+            ],
+            dtype=float
+        ),
+    )
+    k_points = KPoints("gamma")
+
+    ref_pwscf_input = PwscfInput(
+        control=control,
+        system=system,
+        electrons=electrons,
+        atomic_species=atomic_species,
+        atomic_positions=atomic_positions,
+        k_points=k_points,
+    )
+
+    read_pwscf_input = PwscfInput(filepath=TEST_FILES["nexus_cd_fractions.in"])
+    assert_pwscf_input_equals(read_pwscf_input, ref_pwscf_input)
+
+    pseudos = PseudoSet(
+        pseudos={"Cd": PseudoSet.pseudo_files["cd_pbesol_v1.uspp.F.UPF"]},
+        codes="espresso",
+    )
+
+    gen_pwscf_input = generate_pwscf_input(
+        pseudos = pseudos,
+        calculation = "scf",
+        nstep = 100,
+        tprnfor = True,
+        outdir = "scf_output",
+        prefix = "scf",
+        max_seconds = 1200,
+        etot_conv_thr = 1e-06,
+        forc_conv_thr = 0.0001,
+        pseudo_dir = "./",
+        ibrav = 4,
+        a = 2.97887,
+        c = 1.88583,
+        nat = 2,
+        ntyp = 1,
+        tot_charge = 0,
+        ecutwfc = 80,
+        ecutrho = 320,
+        input_dft = "pbe",
+        conv_thr = 1e-07,
+        atoms = ["Cd", "Cd"],
+        positions = np.array(
+            [
+                [1/3, 2/3, 1/4],
+                [2/3, 1/3, 3/4],
+            ],
+            dtype=float
+        ),
+        at_pos_specifier = "crystal",
+        kpts_specifier = "gamma",
     )
     assert_pwscf_input_equals(gen_pwscf_input, ref_pwscf_input)
 
